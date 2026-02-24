@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <radialGradient id="g" cx="35%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#FFF6B0"/>
+      <stop offset="35%" stop-color="#FFD35A"/>
+      <stop offset="70%" stop-color="#F2A928"/>
+      <stop offset="100%" stop-color="#C97A12"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFEE9A"/>
+      <stop offset="100%" stop-color="#B96A0D"/>
+    </linearGradient>
+    <filter id="s" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#000" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#s)">
+    <circle cx="128" cy="128" r="92" fill="url(#rim)"/>
+    <circle cx="128" cy="128" r="84" fill="url(#g)"/>
+    <circle cx="128" cy="128" r="72" fill="none" stroke="#9A560A" stroke-opacity="0.35" stroke-width="6"/>
+
+    <!-- highlight -->
+    <path d="M74 104c10-26 33-44 62-44 11 0 21 3 30 7"
+          fill="none" stroke="#FFFCE6" stroke-opacity="0.8" stroke-width="10" stroke-linecap="round"/>
+
+    <!-- simple emblem -->
+    <path d="M128 78c14 0 26 12 26 26 0 9-5 18-12 22 7 4 12 13 12 22 0 14-12 26-26 26s-26-12-26-26c0-9 5-18 12-22-7-4-12-13-12-22 0-14 12-26 26-26z"
+          fill="#FFF2A5" fill-opacity="0.55" stroke="#9A560A" stroke-opacity="0.35" stroke-width="4"/>
+  </g>
+</svg>
