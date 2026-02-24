@@ -444,7 +444,7 @@ function drawBarista(ctx: CanvasRenderingContext2D, blocks: CartBlock[]) {
   
   ctx.fillStyle = COLORS.cream;
   ctx.beginPath(); ctx.arc(baristaX, baristaY, 15, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = COLORS.warmOrange;
+  ctx.fillStyle = 'hsl(140, 60%, 45%)';
   ctx.beginPath();
   ctx.moveTo(baristaX - 12, baristaY - 10); ctx.lineTo(baristaX + 12, baristaY - 10);
   ctx.lineTo(baristaX + 8, baristaY - 25); ctx.lineTo(baristaX - 8, baristaY - 25);
