@@ -132,6 +132,7 @@ export interface Projectile {
   pierce: boolean;
   isStar: boolean;
   isBrew: boolean;          // Visual: render as brew blob
+  isEspresso: boolean;      // Espresso cannon projectile (rapid fire)
   isIce: boolean;           // Visual: render as ice drop, applies slow on hit
   hitGate: boolean;         // Prevents pierce projectiles from hitting gate twice
 }

@@ -251,11 +251,13 @@ export const CoffeeRushGame: React.FC = () => {
   const espressoBoxIndexRef = useRef(-1);
   const espressoPassiveTickRef = useRef(0);
   const espressoBarrageRef = useRef({ active: false, timer: 0, shotsFired: 0 });
+  const espressoTelemetryRef = useRef({ passiveDamage: 0, barrageDamageEnemies: 0, barrageDamageGate: 0, barrageUses: 0 });
 
   // Ice Blender weapon state
   const hasIceRef = useRef(false);
   const iceBoxIndexRef = useRef(-1);
   const icePassiveTickRef = useRef(0);
+  const iceTelemetryRef = useRef({ passiveDamage: 0, slowsApplied: 0, stormDamageEnemies: 0, stormDamageGate: 0, stormUses: 0 });
   
   // Telemetry
   const telemetryRef = useRef({
@@ -362,7 +364,9 @@ export const CoffeeRushGame: React.FC = () => {
     foamTelemetryRef.current = { passiveDamage: 0, passiveShotsToGate: 0, burstDamageEnemies: 0, burstDamageGate: 0, burstUses: 0, burstUsedDuringGate: 0, unlockedAt: -1, burstTimestamps: [] };
     espressoPassiveTickRef.current = 0;
     espressoBarrageRef.current = { active: false, timer: 0, shotsFired: 0 };
+    espressoTelemetryRef.current = { passiveDamage: 0, barrageDamageEnemies: 0, barrageDamageGate: 0, barrageUses: 0 };
     icePassiveTickRef.current = 0;
+    iceTelemetryRef.current = { passiveDamage: 0, slowsApplied: 0, stormDamageEnemies: 0, stormDamageGate: 0, stormUses: 0 };
     powerRef.current = 0;
     timeRef.current = 0;
     tipsRef.current = 0;
@@ -561,6 +565,19 @@ export const CoffeeRushGame: React.FC = () => {
       brewBurstTimestamps: [...foamTelemetryRef.current.burstTimestamps],
       brewEquippedBoxIndex: foamBoxIndexRef.current,
       brewBurstUsedDuringGate: foamTelemetryRef.current.burstUsedDuringGate,
+      // Espresso telemetry
+      espressoPassiveDamageDealt: espressoTelemetryRef.current.passiveDamage,
+      espressoBarrageDamageToEnemies: espressoTelemetryRef.current.barrageDamageEnemies,
+      espressoBarrageDamageToGate: espressoTelemetryRef.current.barrageDamageGate,
+      espressoBarrageUses: espressoTelemetryRef.current.barrageUses,
+      espressoEquippedBoxIndex: espressoBoxIndexRef.current,
+      // Ice telemetry
+      icePassiveDamageDealt: iceTelemetryRef.current.passiveDamage,
+      iceSlowsApplied: iceTelemetryRef.current.slowsApplied,
+      iceStormDamageToEnemies: iceTelemetryRef.current.stormDamageEnemies,
+      iceStormDamageToGate: iceTelemetryRef.current.stormDamageGate,
+      iceStormUses: iceTelemetryRef.current.stormUses,
+      iceEquippedBoxIndex: iceBoxIndexRef.current,
       // Economy
       coinsStart: coinsStartRef.current,
       coinsEnd: 0,
@@ -767,6 +784,7 @@ export const CoffeeRushGame: React.FC = () => {
     proj.pierce = pierce;
     proj.isStar = isStar;
     proj.isBrew = false;
+    proj.isEspresso = false;
     proj.isIce = false;
     proj.hitGate = false;
   }, [projectilePool, isStressTest]);
@@ -790,10 +808,11 @@ export const CoffeeRushGame: React.FC = () => {
     proj.pierce = pierce;
     proj.isStar = isStar;
     proj.isBrew = false;
+    proj.isEspresso = false;
     proj.isIce = false;
     proj.hitGate = false;
   }, [projectilePool, isStressTest]);
-  
+
   const spawnParticles = useCallback((x: number, y: number, type: Particle['type'], count: number) => {
     for (let i = 0; i < count; i++) {
       const p = particlePool.acquire();
@@ -941,6 +960,10 @@ export const CoffeeRushGame: React.FC = () => {
     proj.radius = GAME_CONFIG.STAR_THROW_RADIUS;
     proj.pierce = true;
     proj.isStar = true;
+    proj.isEspresso = false;
+    proj.isIce = false;
+    proj.isBrew = false;
+    proj.hitGate = false;
   }, [projectilePool]);
   
   // ═══════════════════════════════════════════════════════════════════════
@@ -1028,6 +1051,7 @@ export const CoffeeRushGame: React.FC = () => {
       timer: GAME_CONFIG.ESPRESSO_BARRAGE_DURATION,
       shotsFired: 0,
     };
+    espressoTelemetryRef.current.barrageUses++;
   }, []);
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1042,6 +1066,7 @@ export const CoffeeRushGame: React.FC = () => {
     powerRef.current -= GAME_CONFIG.ICE_STORM_COST;
     setPower(powerRef.current);
     screenShakeRef.current = { x: 0, y: 0, duration: 0.3 };
+    iceTelemetryRef.current.stormUses++;
 
     const stormX = GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH + 80;
     const groundY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
@@ -1065,6 +1090,7 @@ export const CoffeeRushGame: React.FC = () => {
         }
         enemy.hp -= dmg;
         totalDmg += GAME_CONFIG.ICE_STORM_DAMAGE;
+        iceTelemetryRef.current.stormDamageEnemies += GAME_CONFIG.ICE_STORM_DAMAGE;
         // Apply slow
         enemy.slowTimer = GAME_CONFIG.ICE_STORM_SLOW_DURATION;
         enemy.slowFactor = GAME_CONFIG.ICE_STORM_SLOW_FACTOR;
@@ -1083,6 +1109,7 @@ export const CoffeeRushGame: React.FC = () => {
       const gDist = Math.sqrt(gdx * gdx + gdy * gdy);
       if (gDist < GAME_CONFIG.ICE_STORM_RADIUS + gate.width) {
         gate.hp -= GAME_CONFIG.ICE_STORM_GATE_DAMAGE;
+        iceTelemetryRef.current.stormDamageGate += GAME_CONFIG.ICE_STORM_GATE_DAMAGE;
         const si = stageIndexRef.current - 1;
         if (si >= 0 && si < 5) gateDamageDealtRef.current[si] += GAME_CONFIG.ICE_STORM_GATE_DAMAGE;
         spawnParticles(gate.x + gate.width / 2, gate.y, 'sparkle', 4);
@@ -1858,7 +1885,9 @@ export const CoffeeRushGame: React.FC = () => {
           proj.pierce = false;
           proj.isStar = false;
           proj.isBrew = true;
+          proj.isEspresso = false;
           proj.isIce = false;
+          proj.hitGate = false;
         }
       }
     }
@@ -1907,7 +1936,7 @@ export const CoffeeRushGame: React.FC = () => {
             proj.speed = GAME_CONFIG.ESPRESSO_PASSIVE_SPEED;
             proj.damage = GAME_CONFIG.ESPRESSO_PASSIVE_DAMAGE;
             proj.radius = GAME_CONFIG.ESPRESSO_PROJECTILE_RADIUS;
-            proj.pierce = false; proj.isStar = false; proj.isBrew = false; proj.isIce = false; proj.hitGate = false;
+            proj.pierce = false; proj.isStar = false; proj.isBrew = false; proj.isEspresso = true; proj.isIce = false; proj.hitGate = false;
           }
         }
       }
@@ -1943,7 +1972,7 @@ export const CoffeeRushGame: React.FC = () => {
           proj.speed = GAME_CONFIG.ESPRESSO_PASSIVE_SPEED * 1.3;
           proj.damage = GAME_CONFIG.ESPRESSO_BARRAGE_DAMAGE;
           proj.radius = GAME_CONFIG.ESPRESSO_PROJECTILE_RADIUS + 1;
-          proj.pierce = false; proj.isStar = false; proj.isBrew = false; proj.isIce = false; proj.hitGate = false;
+          proj.pierce = false; proj.isStar = false; proj.isBrew = false; proj.isEspresso = true; proj.isIce = false; proj.hitGate = false;
         }
         barrage.shotsFired++;
       }
@@ -1985,7 +2014,7 @@ export const CoffeeRushGame: React.FC = () => {
             proj.speed = GAME_CONFIG.ICE_PASSIVE_SPEED;
             proj.damage = GAME_CONFIG.ICE_PASSIVE_DAMAGE;
             proj.radius = GAME_CONFIG.ICE_PROJECTILE_RADIUS;
-            proj.pierce = false; proj.isStar = false; proj.isBrew = false; proj.isIce = true; proj.hitGate = false;
+            proj.pierce = false; proj.isStar = false; proj.isBrew = false; proj.isEspresso = false; proj.isIce = true; proj.hitGate = false;
           }
         }
       }
@@ -2031,6 +2060,7 @@ export const CoffeeRushGame: React.FC = () => {
           if (proj.isIce && enemy.hp > 0) {
             enemy.slowTimer = GAME_CONFIG.ICE_PASSIVE_SLOW_DURATION;
             enemy.slowFactor = GAME_CONFIG.ICE_PASSIVE_SLOW_FACTOR;
+            iceTelemetryRef.current.slowsApplied++;
           }
           shotsHitRef.current++;
           shotsToEnemiesRef.current++;
@@ -2040,6 +2070,9 @@ export const CoffeeRushGame: React.FC = () => {
             spawnFloatingDamage(enemy.x, enemy.y - enemy.height, proj.damage, 'hsl(45, 90%, 55%)');
           }
           if (proj.isBrew) foamTelemetryRef.current.passiveDamage += proj.damage;
+          // Espresso/Ice damage tracking
+          if (proj.isEspresso) espressoTelemetryRef.current.passiveDamage += proj.damage;
+          if (proj.isIce) iceTelemetryRef.current.passiveDamage += proj.damage;
           spawnParticles(proj.x, proj.y, enemy.shieldHp > 0 ? 'steam' : 'sparkle', 3);
           hitEnemy = true;
           if (!proj.pierce) {
@@ -2071,6 +2104,8 @@ export const CoffeeRushGame: React.FC = () => {
               spawnFloatingDamage(g.x + g.width / 2, g.y, proj.damage, 'hsl(45, 90%, 55%)');
             }
             if (proj.isBrew) foamTelemetryRef.current.passiveShotsToGate++;
+            if (proj.isEspresso) espressoTelemetryRef.current.passiveDamage += proj.damage;
+            if (proj.isIce) iceTelemetryRef.current.passiveDamage += proj.damage;
             shotsToGateRef.current++;
             spawnParticles(isStarPierce ? g.x : proj.x, isStarPierce ? g.y + g.height / 2 : proj.y, 'sparkle', 3);
             if (!proj.pierce) {

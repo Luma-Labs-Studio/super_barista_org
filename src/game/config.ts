@@ -31,14 +31,14 @@ export const STAGES: readonly StageConfig[] = [
   //                                                                                                                    heavy  speeder shielded exploder
   { id: 1, gateHP: 300,   spawnInterval: 900,  enemyHpMult: 1.0,  enemySpeedMult: 1.0,  enemyDropCoins: 1,   gateLumpSum: 40,   heavyEvery: 0,  speederEvery: 0,  shieldedEvery: 0, exploderEvery: 0 },
   { id: 2, gateHP: 400,   spawnInterval: 800,  enemyHpMult: 1.15, enemySpeedMult: 1.05, enemyDropCoins: 2,   gateLumpSum: 80,   heavyEvery: 0,  speederEvery: 5,  shieldedEvery: 0, exploderEvery: 0 },
-  { id: 3, gateHP: 1200,  spawnInterval: 700,  enemyHpMult: 1.6,  enemySpeedMult: 1.15, enemyDropCoins: 5,   gateLumpSum: 180,  heavyEvery: 4,  speederEvery: 4,  shieldedEvery: 6, exploderEvery: 0 },
-  { id: 4, gateHP: 2500,  spawnInterval: 600,  enemyHpMult: 2.0,  enemySpeedMult: 1.15, enemyDropCoins: 10,  gateLumpSum: 400,  heavyEvery: 5,  speederEvery: 3,  shieldedEvery: 5, exploderEvery: 7 },
-  { id: 5, gateHP: 4000,  spawnInterval: 500,  enemyHpMult: 2.5,  enemySpeedMult: 1.20, enemyDropCoins: 20,  gateLumpSum: 800,  heavyEvery: 4,  speederEvery: 3,  shieldedEvery: 4, exploderEvery: 5 },
+  { id: 3, gateHP: 800,   spawnInterval: 750,  enemyHpMult: 1.4,  enemySpeedMult: 1.10, enemyDropCoins: 5,   gateLumpSum: 180,  heavyEvery: 5,  speederEvery: 5,  shieldedEvery: 7, exploderEvery: 0 },
+  { id: 4, gateHP: 1800,  spawnInterval: 650,  enemyHpMult: 1.75, enemySpeedMult: 1.15, enemyDropCoins: 10,  gateLumpSum: 400,  heavyEvery: 5,  speederEvery: 3,  shieldedEvery: 5, exploderEvery: 7 },
+  { id: 5, gateHP: 3200,  spawnInterval: 550,  enemyHpMult: 2.2,  enemySpeedMult: 1.20, enemyDropCoins: 20,  gateLumpSum: 800,  heavyEvery: 4,  speederEvery: 3,  shieldedEvery: 4, exploderEvery: 5 },
   { id: 6, isBoss: true,  spawnInterval: 0,    enemyHpMult: 1.0,  enemySpeedMult: 1.0,  enemyDropCoins: 50,  gateLumpSum: 0,    heavyEvery: 0,  speederEvery: 0,  shieldedEvery: 0, exploderEvery: 0, bossHP: 10000, bossDropCoins: 50, clearBonus: 1500 },
 ] as const;
 
 // Gate HP ratios relative to Gate 1 (for easy calibration)
-export const GATE_HP_RATIOS = [1.0, 1.33, 4.0, 8.33, 13.33] as const;
+export const GATE_HP_RATIOS = [1.0, 1.33, 2.67, 6.0, 10.67] as const;
 
 export const GAME_CONFIG = {
   // ─────────────────────────────────────────────────────────────

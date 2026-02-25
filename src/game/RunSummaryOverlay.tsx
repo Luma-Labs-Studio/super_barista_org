@@ -102,6 +102,10 @@ export const RunSummaryOverlay: React.FC<RunSummaryOverlayProps> = ({ stats, pur
     lines.push(`  Brew Box Index: ${t?.brewEquippedBoxIndex ?? -1} | Burst During Gate: ${t?.brewBurstUsedDuringGate ?? 0}`);
     if ((t?.brewUnlockedAt ?? -1) >= 0) lines.push(`  Brew unlocked at: ${fmt(t?.brewUnlockedAt ?? 0)}s`);
     if (t?.brewBurstTimestamps && t.brewBurstTimestamps.length > 0) lines.push(`  Brew Burst timestamps: ${t.brewBurstTimestamps.map(ts => fmt(ts, 1)).join(', ')}`);
+    lines.push(`Espresso Barrage: ${t?.espressoBarrageUses ?? 0} uses | Dmg to Enemies: ${t?.espressoBarrageDamageToEnemies ?? 0} | Dmg to Gate: ${t?.espressoBarrageDamageToGate ?? 0} | Passive: ${t?.espressoPassiveDamageDealt ?? 0}`);
+    lines.push(`  Espresso Box Index: ${t?.espressoEquippedBoxIndex ?? -1}`);
+    lines.push(`Ice Storm: ${t?.iceStormUses ?? 0} uses | Dmg to Enemies: ${t?.iceStormDamageToEnemies ?? 0} | Dmg to Gate: ${t?.iceStormDamageToGate ?? 0} | Passive: ${t?.icePassiveDamageDealt ?? 0} | Slows: ${t?.iceSlowsApplied ?? 0}`);
+    lines.push(`  Ice Box Index: ${t?.iceEquippedBoxIndex ?? -1}`);
     lines.push('');
 
     // 6. PRESSURE / SURVIVAL
@@ -110,7 +114,7 @@ export const RunSummaryOverlay: React.FC<RunSummaryOverlayProps> = ({ stats, pur
     lines.push(hr);
     lines.push(`Max Latched: ${t?.maxLatchedPeak ?? 0} peak | Time at max: ${fmt(t?.timeAtMaxLatched ?? 0)}s`);
     lines.push(`Blocks Lost: ${t?.blocksLost ?? 0} | First block lost: ${t?.timeToFirstBlockLost === -1 ? 'N/A' : fmt(t?.timeToFirstBlockLost ?? 0) + 's'}`);
-    lines.push(`Bomb Uses: ${t?.tonicBombUses ?? 0} | Star Throws: ${t?.starThrowUses ?? 0} | Brew Bursts: ${t?.brewBurstUses ?? 0}`);
+    lines.push(`Bomb Uses: ${t?.tonicBombUses ?? 0} | Star Throws: ${t?.starThrowUses ?? 0} | Brew Bursts: ${t?.brewBurstUses ?? 0} | Espresso Barrages: ${t?.espressoBarrageUses ?? 0} | Ice Storms: ${t?.iceStormUses ?? 0}`);
     lines.push('');
 
     // 7. ECONOMY TRACE
