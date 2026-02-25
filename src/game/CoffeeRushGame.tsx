@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { GAME_CONFIG, COLORS, STAGES, TRAVEL_DURATION_BY_STAGE } from './config';
-import { drawGame, drawMenuScene, drawFloatingDamageNumbers, resetRendererState } from './renderer';
+import { GAME_CONFIG, TRAVEL_DURATION_BY_STAGE } from './config';
+import { drawGame, drawMenuScene, drawFloatingDamageNumbers } from './renderer';
 import { useGameLoop } from './useGameLoop';
 import { useObjectPool } from './useObjectPool';
 import { GarageOverlay } from './GarageOverlay';
@@ -13,9 +13,6 @@ import { EvoPopup } from './EvoPopup';
 import {
   loadProgression,
   saveProgression,
-  updateRecords,
-  updateChapterClear,
-  getPipCost,
   getPurchaseLog,
   clearPurchaseLog,
   consumeEnergy,
@@ -27,15 +24,10 @@ import type {
   GateBuilding,
   CartBlock,
   Enemy,
-  Projectile,
-  TipDrop,
-  Particle,
-  FloatingDamage,
   GameStats,
   BossState,
   RunTelemetry,
   EvoTrait,
-  PurchaseEvent,
 } from './types';
 import {
   createEnemy,
@@ -50,24 +42,11 @@ import {
   resetFloatingDamage,
   getStage,
 } from './systems/factories';
-import {
-  spawnParticles as _spawnParticles,
-  spawnTip as _spawnTip,
-  spawnFloatingDamage as _spawnFloatingDamage,
-  updateVFX,
-} from './systems/vfx';
+import { updateVFX } from './systems/vfx';
 import type { GameRefs } from './systems/gameRefs';
 import { buildTelemetry as _buildTelemetry } from './systems/telemetry';
-import {
-  fireProjectile as _fireProjectile,
-  fireProjectileAt as _fireProjectileAt,
-  updateAutoAttack,
-  updateProjectiles,
-} from './systems/combat';
-import {
-  spawnEnemy as _spawnEnemy,
-  updateSiegeSpawning,
-} from './systems/spawning';
+import { updateAutoAttack, updateProjectiles } from './systems/combat';
+import { updateSiegeSpawning } from './systems/spawning';
 import { updateEnemies } from './systems/enemies';
 import {
   handleTonicBomb as _handleTonicBomb,
@@ -85,6 +64,7 @@ import {
   updateBreatherPhase,
 } from './systems/phases';
 import { updateBossSystem } from './systems/boss';
+import { initGameState } from './systems/init';
 
 export const CoffeeRushGame: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -320,137 +300,26 @@ export const CoffeeRushGame: React.FC = () => {
   const initGame = useCallback(() => {
     const progression = loadProgression();
 
-    resetRendererState();
-    endHandledRef.current = false;
-    endReasonRef.current = null;
-    coinsStartRef.current = progression.totalCoins;
-    
-    // Calculate multipliers from upgrade levels (continuous upgrade system)
-    // Damage: base multiplier + flat bonus per level (e.g. 12 + 1*level = 13, 14, 15...)
-    const damageMultiplier = 1 + progression.damagePips * GAME_CONFIG.DAMAGE_BONUS_PER_PIP;
-    // Power regen: base + per-upgrade bonus (0.35 + 0.02*level)
-    const powerRegenMult = 1 + progression.powerPips * GAME_CONFIG.POWER_REGEN_BONUS_PER_PIP;
-    
-    // Block count from blockCountLevel
-    const blockCount = 1 + progression.blockCountLevel;
-    
-    // Initialize blocks
-    const groundY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
-    const baseHp = GAME_CONFIG.BLOCK_MAX_HP;
-    // Chassis (i=0) gets average pip bonus from all block pips
-    const totalBlockPips = (progression.blockPips || []).reduce((sum: number, p: number) => sum + p, 0);
-    const avgBlockPips = progression.blockCountLevel > 0 ? totalBlockPips / progression.blockCountLevel : 0;
-    blocksRef.current = Array.from({ length: blockCount }, (_, i) => {
-      const pipBonus = i === 0 ? avgBlockPips : (progression.blockPips[i - 1] ?? 0);
-      const blockHp = Math.floor(baseHp * (1 + pipBonus * 0.10));
-      return {
-        id: i,
-        hp: blockHp,
-        maxHp: blockHp,
-        y: groundY - 30 - (i + 1) * GAME_CONFIG.BLOCK_HEIGHT,
-        height: GAME_CONFIG.BLOCK_HEIGHT,
-        destroyed: false,
-        collapseOffset: 0,
-      };
-    });
-    
-    damageMultiplierRef.current = damageMultiplier;
-    powerRegenMultiplierRef.current = powerRegenMult;
-    
-    // Check for star weapon (purchased from Garage, per-box)
-    hasStarRef.current = progression.starPerBox?.some(v => v) ?? progression.starUnlocked;
-    starDamageMultRef.current = 1 + (progression.starPips ?? 0) * GAME_CONFIG.STAR_DAMAGE_BONUS_PER_PIP;
-    
-    // Check for brew weapon (purchased from Garage, per-box)
-    hasFoamRef.current = progression.brewPerBox?.some(v => v) ?? false;
-    foamBoxIndexRef.current = progression.brewPerBox?.findIndex(v => v) ?? -1;
+    // Reset all refs and game state (delegated to init system)
+    initGameState(refs, progression);
 
-    // Check for espresso weapon
-    hasEspressoRef.current = progression.espressoPerBox?.some(v => v) ?? false;
-    espressoBoxIndexRef.current = progression.espressoPerBox?.findIndex(v => v) ?? -1;
-
-    // Check for ice weapon
-    hasIceRef.current = progression.icePerBox?.some(v => v) ?? false;
-    iceBoxIndexRef.current = progression.icePerBox?.findIndex(v => v) ?? -1;
-    
-    // Reset all refs
-    latchedCountRef.current = 0;
-    latchOrderCounterRef.current = 0;
-    screenShakeRef.current = { x: 0, y: 0, duration: 0 };
-    lastAttackRef.current = -999;
-    lastSpawnRef.current = -999;
-    lastStarAttackRef.current = -999;
-    starPassiveTickRef.current = 0;
-    starTelemetryRef.current = { passiveDamage: 0, throwDamageEnemies: 0, throwDamageGate: 0, throwUses: 0 };
-    foamPassiveTickRef.current = 0;
-    foamSweepRef.current = 0;
-    foamTelemetryRef.current = { passiveDamage: 0, passiveShotsToGate: 0, burstDamageEnemies: 0, burstDamageGate: 0, burstUses: 0, burstUsedDuringGate: 0, unlockedAt: -1, burstTimestamps: [] };
-    espressoPassiveTickRef.current = 0;
-    espressoBarrageRef.current = { active: false, timer: 0, shotsFired: 0 };
-    espressoTelemetryRef.current = { passiveDamage: 0, barrageDamageEnemies: 0, barrageDamageGate: 0, barrageUses: 0 };
-    icePassiveTickRef.current = 0;
-    iceTelemetryRef.current = { passiveDamage: 0, slowsApplied: 0, stormDamageEnemies: 0, stormDamageGate: 0, stormUses: 0 };
-    powerRef.current = 0;
-    timeRef.current = 0;
-    tipsRef.current = 0;
-    customersServedRef.current = 0;
-    shotsFiredRef.current = 0;
-    shotsHitRef.current = 0;
-    spawnIndexRef.current = 0;
-    coinsFromKillsRef.current = 0;
-    coinsFromGateLumpsRef.current = 0;
-    gateDamageDealtRef.current = [0, 0, 0, 0, 0];
-    gateTimeSpentRef.current = [0, 0, 0, 0, 0];
-    shotsToGateRef.current = 0;
-    shotsToEnemiesRef.current = 0;
-    bombGateDamageByGateRef.current = [0, 0, 0, 0, 0];
-    gateCleanupTimerRef.current = 0;
-    runIdRef.current = Date.now();
-    gateDestroyedRef.current = [false, false, false, false, false];
-    burstsTriggeredRef.current = 0;
-    targetModeCountsRef.current = { front: 0, mid: 0, back: 0, gate: 0 };
-    stage1WaveRef.current = { spawned: 0, breatherTimer: 0 };
-    bombSilenceTimerRef.current = 0;
-    setShowRunSummary(false);
-    
-    telemetryRef.current = {
-      maxLatchedPeak: 0, timeAtMaxLatched: 0,
-      blocksLost: 0, timeToFirstBlockLost: -1,
-      tonicBombUses: 0,
-      enemiesSpawned: { normal: 0, heavy: 0, boss: 0 },
-      enemiesKilled: { normal: 0, heavy: 0, boss: 0 },
-    };
-    
-    // Clear pools
+    // Clear pools (React hook objects — must stay in component)
     enemyPool.clear();
     projectilePool.clear();
     tipPool.clear();
     particlePool.clear();
     floatingDamagePool.clear();
-    
-    // Reset state
+
+    // Reset React state
     setPower(0);
     setTips(0);
     setTimeSurvived(0);
-    
-    // Boss reset
-    bossStateRef.current = { isActive: false, hp: 0, maxHp: 0, spawnedAt: 0, addSpawnTimer: 0, phase: 1, phaseTransitioned: [false, false, false] };
-    setBossState(bossStateRef.current);
-    bossIncomingRef.current = 0;
-    bossEnemyRef.current = null;
-    
-    // Stage/phase reset
-    stageIndexRef.current = 1;
+    setBossState(refs.bossStateRef.current);
     setStageIndex(1);
-    playPhaseRef.current = 'TRAVEL';
     setPlayPhase('TRAVEL');
-    travelTimerRef.current = TRAVEL_DURATION_BY_STAGE[0];
-    isSimulationFrozenRef.current = false;
-    phaseTimersRef.current = { travel: 0, siege: 0, evoPick: 0, boss: 0 };
-    perStageTimersRef.current = { travel: [0, 0, 0, 0, 0], siege: [0, 0, 0, 0, 0], breather: [0, 0, 0, 0, 0] };
-    gateBuildingRef.current = null;
     setGateBuildingState(null);
     setEvoPopupData(null);
+    setShowRunSummary(false);
   }, [enemyPool, projectilePool, tipPool, particlePool, floatingDamagePool]);
   
   const handlePlay = useCallback((mode: GameMode) => {
@@ -593,34 +462,6 @@ export const CoffeeRushGame: React.FC = () => {
   const handleHome = useCallback(() => setGameState('MENU'), []);
   
   // ═══════════════════════════════════════════════════════════════════════
-  // SPAWN ENEMY (delegated to spawning system)
-  const spawnEnemy = useCallback(() => {
-    _spawnEnemy(refs);
-  }, []);
-  
-  const fireProjectile = useCallback((targetEnemy: Enemy, pierce = false, isStar = false) => {
-    _fireProjectile(refs, targetEnemy, isStressTest, pierce, isStar);
-  }, [isStressTest]);
-
-  const fireProjectileAt = useCallback((targetX: number, targetY: number, customDamage?: number, pierce = false, isStar = false) => {
-    _fireProjectileAt(refs, targetX, targetY, isStressTest, customDamage, pierce, isStar);
-  }, [isStressTest]);
-
-  const spawnParticles = useCallback((x: number, y: number, type: Particle['type'], count: number) => {
-    _spawnParticles(particlePool, x, y, type, count);
-  }, [particlePool]);
-
-  const spawnTip = useCallback((x: number, y: number, value: number) => {
-    _spawnTip(tipPool, x, y, value);
-  }, [tipPool]);
-
-  const spawnFloatingDamage = useCallback((x: number, y: number, value: number, color?: string) => {
-    _spawnFloatingDamage(floatingDamagePool, x, y, value, color);
-  }, [floatingDamagePool]);
-  
-  // ═══════════════════════════════════════════════════════════════════════
-  // TONIC BOMB (damages enemies + gate)
-  // ═══════════════════════════════════════════════════════════════════════
   // Active abilities (delegated to weapons system)
   const handleTonicBomb = useCallback(() => { _handleTonicBomb(refs, setPower); }, []);
   const handleStarThrow = useCallback(() => { _handleStarThrow(refs, setPower); }, []);
@@ -654,8 +495,6 @@ export const CoffeeRushGame: React.FC = () => {
       setPlayPhase('TRAVEL');
     }
   }, []);
-  
-  // createGateBuilding — delegated to systems/gate.ts
   
   // ═══════════════════════════════════════════════════════════════════════
   // GAME LOOP
