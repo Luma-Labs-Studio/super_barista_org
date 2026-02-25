@@ -57,6 +57,8 @@ import {
   spawnFloatingDamage as _spawnFloatingDamage,
   updateVFX,
 } from './systems/vfx';
+import type { GameRefs } from './systems/gameRefs';
+import { buildTelemetry as _buildTelemetry } from './systems/telemetry';
 
 export const CoffeeRushGame: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -242,7 +244,53 @@ export const CoffeeRushGame: React.FC = () => {
   const tipPool = useObjectPool(createTip, 30, resetTip);
   const particlePool = useObjectPool(createParticle, GAME_CONFIG.MAX_PARTICLES, resetParticle);
   const floatingDamagePool = useObjectPool(createFloatingDamage, 20, resetFloatingDamage);
-  
+
+  // ── Assemble GameRefs "ref bag" for system functions ──
+  const refs: GameRefs = {
+    // Pools
+    enemyPool, projectilePool, particlePool, tipPool, floatingDamagePool,
+    // Canvas
+    canvasRef,
+    // Phase & stage
+    playPhaseRef, stageIndexRef, travelTimerRef, isSimulationFrozenRef,
+    // Phase timing
+    phaseTimersRef, perStageTimersRef,
+    // Economy
+    coinsFromKillsRef, coinsFromGateLumpsRef, tipsRef, coinsStartRef,
+    // Gate telemetry
+    gateDamageDealtRef, gateTimeSpentRef, shotsToGateRef, shotsToEnemiesRef,
+    bombGateDamageByGateRef, gateDestroyedRef, gateCleanupTimerRef,
+    // Gate building
+    gateBuildingRef,
+    // Boss
+    bossStateRef, bossIncomingRef, bossEnemyRef,
+    // Blocks & latching
+    blocksRef, latchedCountRef, latchOrderCounterRef,
+    // Combat
+    lastAttackRef, lastSpawnRef, shotsFiredRef, shotsHitRef, spawnIndexRef,
+    customersServedRef, damageMultiplierRef, targetModeCountsRef, burstsTriggeredRef,
+    // Power
+    powerRef, powerRegenMultiplierRef,
+    // Time
+    timeRef, hudAccumulatorRef, fpsRef,
+    // Screen shake
+    screenShakeRef,
+    // Run management
+    runIdRef, endHandledRef, endReasonRef,
+    // Spawn
+    stage1WaveRef, bombSilenceTimerRef,
+    // Star weapon
+    lastStarAttackRef, hasStarRef, starPassiveTickRef, starDamageMultRef, starTelemetryRef,
+    // Foam weapon
+    hasFoamRef, foamBoxIndexRef, foamPassiveTickRef, foamSweepRef, foamTelemetryRef,
+    // Espresso weapon
+    hasEspressoRef, espressoBoxIndexRef, espressoPassiveTickRef, espressoBarrageRef, espressoTelemetryRef,
+    // Ice weapon
+    hasIceRef, iceBoxIndexRef, icePassiveTickRef, iceTelemetryRef,
+    // Core telemetry
+    telemetryRef,
+  };
+
   const initGame = useCallback(() => {
     const progression = loadProgression();
 
@@ -413,131 +461,7 @@ export const CoffeeRushGame: React.FC = () => {
   }, []);
   
   const buildTelemetry = useCallback((): RunTelemetry => {
-    const t = telemetryRef.current;
-    const hitRate = shotsFiredRef.current > 0 
-      ? Math.round((shotsHitRef.current / shotsFiredRef.current) * 100) : 0;
-    
-    let bossOutcome: RunTelemetry['bossOutcome'] = 'not_spawned';
-    let bossHpPercent = 0;
-    if (bossStateRef.current.isActive || bossEnemyRef.current) {
-      const boss = bossEnemyRef.current;
-      if (boss && boss.hp <= 0) {
-        bossOutcome = 'defeated';
-      } else if (boss) {
-        bossOutcome = 'died_during_boss';
-        bossHpPercent = Math.round((boss.hp / boss.maxHp) * 100);
-      } else {
-        bossOutcome = 'spawned';
-      }
-    }
-    
-    const prog = loadProgression();
-    const coinsFromKills = coinsFromKillsRef.current;
-    const coinsFromGateLumps = coinsFromGateLumpsRef.current;
-    
-    return {
-      runId: runIdRef.current,
-      telemetryBuiltAt: Date.now(),
-      gameMode,
-      stageReached: stageIndexRef.current,
-      reachedBoss: bossStateRef.current.isActive || bossEnemyRef.current !== null || bossOutcome === 'defeated',
-      bossOutcome, bossHpPercent,
-      pipLevels: {
-        blockPips: [...prog.blockPips],
-        weaponPips: [...prog.weaponPips],
-        powerPips: prog.powerPips,
-        damagePips: prog.damagePips,
-        blockCount: prog.blockCountLevel,
-        starPips: prog.starPips ?? 0,
-      },
-      shotsFired: shotsFiredRef.current,
-      shotsHit: shotsHitRef.current,
-      hitRate,
-      maxLatchedPeak: t.maxLatchedPeak,
-      timeAtMaxLatched: t.timeAtMaxLatched,
-      blocksLost: t.blocksLost,
-      timeToFirstBlockLost: t.timeToFirstBlockLost,
-      tonicBombUses: t.tonicBombUses,
-      gateDamageDealt: [...gateDamageDealtRef.current],
-      gateTimeSpent: [...gateTimeSpentRef.current],
-      gateHpRemainingByGate: (() => {
-        const result: number[] = [];
-        for (let i = 0; i < 5; i++) {
-          const stageReached = stageIndexRef.current;
-          if (i < stageReached - 1) {
-            // Previous stages: destroyed → 0, else shouldn't happen
-            result.push(0);
-          } else if (i === stageReached - 1) {
-            // Current stage: read live gate HP
-            const g = gateBuildingRef.current;
-            result.push(g ? Math.max(0, g.hp) : (STAGES[i].gateHP ?? 0));
-          } else {
-            // Unreached: full HP
-            result.push(STAGES[i].gateHP ?? 0);
-          }
-        }
-        return result;
-      })(),
-      shotsToGate: shotsToGateRef.current,
-      shotsToEnemies: shotsToEnemiesRef.current,
-      bombGateDamageTotal: bombGateDamageByGateRef.current.reduce((a, b) => a + b, 0),
-      bombGateDamageByGate: [...bombGateDamageByGateRef.current],
-      gateDestroyedByGate: [...gateDestroyedRef.current],
-      burstsTriggered: burstsTriggeredRef.current,
-      targetModeCounts: { ...targetModeCountsRef.current },
-      phaseAtDeath: playPhaseRef.current,
-      deathStage: stageIndexRef.current,
-      timeInTravel: phaseTimersRef.current.travel,
-      timeInSiege: phaseTimersRef.current.siege,
-      timeInEvoPick: phaseTimersRef.current.evoPick,
-      timeInBoss: phaseTimersRef.current.boss,
-      travelTimeByStage: [...perStageTimersRef.current.travel],
-      siegeTimeByStage: [...perStageTimersRef.current.siege],
-      breatherTimeByStage: [...perStageTimersRef.current.breather],
-      totalTravelTime: perStageTimersRef.current.travel.reduce((a, b) => a + b, 0),
-      totalSiegeTime: perStageTimersRef.current.siege.reduce((a, b) => a + b, 0),
-      totalBreatherTime: perStageTimersRef.current.breather.reduce((a, b) => a + b, 0),
-      enemiesSpawned: { ...t.enemiesSpawned },
-      enemiesKilled: { ...t.enemiesKilled },
-      // Star telemetry
-      starPassiveDamageDealt: starTelemetryRef.current.passiveDamage,
-      starThrowDamageToEnemies: starTelemetryRef.current.throwDamageEnemies,
-      starThrowDamageToGate: starTelemetryRef.current.throwDamageGate,
-      starThrowUses: starTelemetryRef.current.throwUses,
-      // Brew telemetry
-      brewPassiveDamageDealt: foamTelemetryRef.current.passiveDamage,
-      brewPassiveShotsToGate: foamTelemetryRef.current.passiveShotsToGate,
-      brewBurstDamageToEnemies: foamTelemetryRef.current.burstDamageEnemies,
-      brewBurstDamageToGate: foamTelemetryRef.current.burstDamageGate,
-      brewBurstUses: foamTelemetryRef.current.burstUses,
-      brewUnlockedAt: foamTelemetryRef.current.unlockedAt,
-      brewBurstTimestamps: [...foamTelemetryRef.current.burstTimestamps],
-      brewEquippedBoxIndex: foamBoxIndexRef.current,
-      brewBurstUsedDuringGate: foamTelemetryRef.current.burstUsedDuringGate,
-      // Espresso telemetry
-      espressoPassiveDamageDealt: espressoTelemetryRef.current.passiveDamage,
-      espressoBarrageDamageToEnemies: espressoTelemetryRef.current.barrageDamageEnemies,
-      espressoBarrageDamageToGate: espressoTelemetryRef.current.barrageDamageGate,
-      espressoBarrageUses: espressoTelemetryRef.current.barrageUses,
-      espressoEquippedBoxIndex: espressoBoxIndexRef.current,
-      // Ice telemetry
-      icePassiveDamageDealt: iceTelemetryRef.current.passiveDamage,
-      iceSlowsApplied: iceTelemetryRef.current.slowsApplied,
-      iceStormDamageToEnemies: iceTelemetryRef.current.stormDamageEnemies,
-      iceStormDamageToGate: iceTelemetryRef.current.stormDamageGate,
-      iceStormUses: iceTelemetryRef.current.stormUses,
-      iceEquippedBoxIndex: iceBoxIndexRef.current,
-      // Economy
-      coinsStart: coinsStartRef.current,
-      coinsEnd: 0,
-      coinsEarnedActual: 0,
-      coinsFromKills,
-      coinsFromGateLumps,
-      clearBonusCoins: 0,
-      coinsTotalBreakdown: coinsFromKills + coinsFromGateLumps,
-      economyDelta: 0,
-      deltaExplanation: '',
-    };
+    return _buildTelemetry(refs, gameMode);
   }, [gameMode]);
   
   const handleChapterClear = useCallback(() => {
@@ -2272,40 +2196,8 @@ export const CoffeeRushGame: React.FC = () => {
       }
     });
     
-    // Update tips
-    tipPool.getActive().forEach(tip => {
-      tip.y -= GAME_CONFIG.TIP_FLOAT_SPEED * deltaTime;
-      tip.opacity = Math.max(0, tip.opacity - deltaTime * 0.5);
-      if (tip.y < tip.targetY || tip.opacity <= 0) {
-        tipPool.release(tip);
-      }
-    });
-    
-    // Update particles
-    particlePool.getActive().forEach(p => {
-      p.x += p.vx * deltaTime;
-      p.y += p.vy * deltaTime;
-      p.vy += 100 * deltaTime;
-      p.life -= deltaTime;
-      if (p.life <= 0) particlePool.release(p);
-    });
-
-    // Update floating damage numbers
-    floatingDamagePool.getActive().forEach(fd => {
-      fd.y -= 40 * deltaTime; // Float upward
-      fd.life -= deltaTime;
-      if (fd.life <= 0) floatingDamagePool.release(fd);
-    });
-    
-    // Screen shake
-    if (screenShakeRef.current.duration > 0) {
-      screenShakeRef.current.duration -= deltaTime;
-      screenShakeRef.current.x = (Math.random() - 0.5) * 10;
-      screenShakeRef.current.y = (Math.random() - 0.5) * 10;
-    } else {
-      screenShakeRef.current.x = 0;
-      screenShakeRef.current.y = 0;
-    }
+    // Update VFX (tips, particles, floating damage, screen shake)
+    updateVFX(refs, deltaTime);
     
     // Render
     ctx.clearRect(0, 0, GAME_CONFIG.CANVAS_WIDTH, GAME_CONFIG.CANVAS_HEIGHT);
