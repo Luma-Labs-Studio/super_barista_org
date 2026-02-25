@@ -38,102 +38,25 @@ import type {
   EvoTrait,
   PurchaseEvent,
 } from './types';
-
-const createEnemy = (id: number): Enemy => ({
-  id,
-  x: 0, y: 0,
-  hp: GAME_CONFIG.ENEMY_BASE_HP,
-  maxHp: GAME_CONFIG.ENEMY_BASE_HP,
-  speed: GAME_CONFIG.ENEMY_BASE_SPEED,
-  width: GAME_CONFIG.ENEMY_WIDTH,
-  height: GAME_CONFIG.ENEMY_HEIGHT,
-  active: false,
-  isServed: false,
-  servedTimer: 0,
-  animationFrame: 0,
-  state: 'WALKING',
-  latchedTimer: 0,
-  queuePosition: 0,
-  kind: 'NORMAL',
-  latchOrder: 0,
-  shieldHp: 0,
-  slowTimer: 0,
-  slowFactor: 1,
-});
-
-const createProjectile = (id: number): Projectile => ({
-  id,
-  x: 0, y: 0,
-  targetX: 0, targetY: 0,
-  speed: GAME_CONFIG.PROJECTILE_SPEED,
-  damage: GAME_CONFIG.PROJECTILE_DAMAGE,
-  active: false,
-  radius: GAME_CONFIG.PROJECTILE_RADIUS,
-  pierce: false,
-  isStar: false,
-  isBrew: false,
-  isEspresso: false,
-  isIce: false,
-  hitGate: false,
-});
-
-const createTip = (id: number): TipDrop => ({
-  id,
-  x: 0, y: 0,
-  targetY: 0,
-  value: 1,
-  active: false,
-  opacity: 1,
-});
-
-const createParticle = (id: number): Particle => ({
-  id,
-  x: 0, y: 0,
-  vx: 0, vy: 0,
-  life: 0, maxLife: 1,
-  color: COLORS.sparkle,
-  size: 5,
-  type: 'sparkle',
-  active: false,
-});
-
-const createFloatingDamage = (id: number): FloatingDamage => ({
-  id,
-  x: 0, y: 0,
-  value: 0,
-  life: 0, maxLife: 1.0,
-  color: '#ffffff',
-  fontSize: 16,
-  active: false,
-});
-
-// Pool reset functions — clear stale data when reusing pooled objects
-const resetProjectile = (p: Projectile) => {
-  p.x = 0; p.y = 0; p.targetX = 0; p.targetY = 0;
-  p.speed = 0; p.damage = 0; p.radius = GAME_CONFIG.PROJECTILE_RADIUS;
-  p.pierce = false; p.isStar = false; p.isBrew = false;
-  p.isEspresso = false; p.isIce = false; p.hitGate = false;
-};
-const resetEnemy = (e: Enemy) => {
-  e.x = 0; e.y = 0; e.hp = 0; e.maxHp = 0; e.speed = 0;
-  e.isServed = false; e.servedTimer = 0; e.state = 'WALKING';
-  e.latchedTimer = 0; e.queuePosition = 0; e.kind = 'NORMAL';
-  e.latchOrder = 0; e.shieldHp = 0; e.slowTimer = 0; e.slowFactor = 1;
-};
-const resetParticle = (p: Particle) => {
-  p.x = 0; p.y = 0; p.vx = 0; p.vy = 0;
-  p.life = 0; p.maxLife = 1; p.type = 'sparkle'; p.size = 5;
-};
-const resetTip = (t: TipDrop) => {
-  t.x = 0; t.y = 0; t.targetY = 0; t.value = 0; t.opacity = 1;
-};
-const resetFloatingDamage = (f: FloatingDamage) => {
-  f.x = 0; f.y = 0; f.value = 0; f.life = 0; f.maxLife = 1;
-  f.fontSize = 16; f.color = '#ffffff';
-};
-
-// Get stage config (1-indexed)
-const getStage = (index: number) => STAGES[Math.min(index - 1, STAGES.length - 1)];
+import {
+  createEnemy,
+  createProjectile,
+  createTip,
+  createParticle,
+  createFloatingDamage,
+  resetEnemy,
+  resetProjectile,
+  resetTip,
+  resetParticle,
+  resetFloatingDamage,
+  getStage,
+} from './systems/factories';
+import {
+  spawnParticles as _spawnParticles,
+  spawnTip as _spawnTip,
+  spawnFloatingDamage as _spawnFloatingDamage,
+  updateVFX,
+} from './systems/vfx';
 
 export const CoffeeRushGame: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -840,50 +763,15 @@ export const CoffeeRushGame: React.FC = () => {
   }, [projectilePool, isStressTest]);
 
   const spawnParticles = useCallback((x: number, y: number, type: Particle['type'], count: number) => {
-    for (let i = 0; i < count; i++) {
-      const p = particlePool.acquire();
-      if (!p) break;
-      p.x = x; p.y = y;
-      p.type = type;
-      p.life = 0.5 + Math.random() * 0.5;
-      p.maxLife = p.life;
-      p.size = 4 + Math.random() * 6;
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 50 + Math.random() * 100;
-      p.vx = Math.cos(angle) * speed;
-      p.vy = Math.sin(angle) * speed - 50;
-      if (type === 'confetti') {
-        const colors = ['hsl(25, 80%, 55%)', 'hsl(45, 90%, 55%)', 'hsl(350, 80%, 60%)', 'hsl(0, 0%, 95%)'];
-        p.color = colors[Math.floor(Math.random() * colors.length)];
-      } else if (type === 'crumble') {
-        p.color = COLORS.gateCrumble;
-        p.size = 6 + Math.random() * 8;
-      }
-    }
+    _spawnParticles(particlePool, x, y, type, count);
   }, [particlePool]);
-  
+
   const spawnTip = useCallback((x: number, y: number, value: number) => {
-    const tip = tipPool.acquire();
-    if (!tip) return;
-    tip.x = x; tip.y = y;
-    tip.targetY = 60;
-    tip.opacity = 1;
-    tip.value = value;
+    _spawnTip(tipPool, x, y, value);
   }, [tipPool]);
 
-  // Spawn floating damage number (only for big hits: abilities, bomb, star throw, etc.)
   const spawnFloatingDamage = useCallback((x: number, y: number, value: number, color?: string) => {
-    const fd = floatingDamagePool.acquire();
-    if (!fd) return;
-    fd.x = x + (Math.random() - 0.5) * 20; // Slight horizontal scatter
-    fd.y = y;
-    fd.value = Math.round(value);
-    fd.life = 1.0;
-    fd.maxLife = 1.0;
-    // Font size scales with damage value
-    fd.fontSize = value >= 200 ? 24 : value >= 100 ? 20 : value >= 50 ? 17 : 14;
-    // Color based on damage source
-    fd.color = color || '#ffffff';
+    _spawnFloatingDamage(floatingDamagePool, x, y, value, color);
   }, [floatingDamagePool]);
   
   // ═══════════════════════════════════════════════════════════════════════
