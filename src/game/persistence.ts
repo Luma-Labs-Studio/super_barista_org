@@ -460,7 +460,7 @@ export const purchaseEspressoForBox = (boxIndex: number, cost: number): boolean 
   current.espressoPerBox[boxIndex] = true;
   current.boxWeapons[boxIndex] = 'espresso';
   saveProgression(current);
-  logPurchase({ ts: Date.now(), type: 'brew_unlock', target: `espresso_box_${boxIndex}`, before: 'locked', after: 'unlocked', beforeValue: 0, afterValue: 1, coinCost: cost, coinsBefore, coinsAfter: current.totalCoins });
+  logPurchase({ ts: Date.now(), type: 'espresso_unlock', target: `espresso_box_${boxIndex}`, before: 'locked', after: 'unlocked', beforeValue: 0, afterValue: 1, coinCost: cost, coinsBefore, coinsAfter: current.totalCoins });
   return true;
 };
 
@@ -478,7 +478,7 @@ export const purchaseIceForBox = (boxIndex: number, cost: number): boolean => {
   current.icePerBox[boxIndex] = true;
   current.boxWeapons[boxIndex] = 'ice';
   saveProgression(current);
-  logPurchase({ ts: Date.now(), type: 'brew_unlock', target: `ice_box_${boxIndex}`, before: 'locked', after: 'unlocked', beforeValue: 0, afterValue: 1, coinCost: cost, coinsBefore, coinsAfter: current.totalCoins });
+  logPurchase({ ts: Date.now(), type: 'ice_unlock', target: `ice_box_${boxIndex}`, before: 'locked', after: 'unlocked', beforeValue: 0, afterValue: 1, coinCost: cost, coinsBefore, coinsAfter: current.totalCoins });
   return true;
 };
 

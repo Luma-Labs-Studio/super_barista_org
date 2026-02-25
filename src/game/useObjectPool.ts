@@ -7,7 +7,8 @@ interface Poolable {
 
 export function useObjectPool<T extends Poolable>(
   createFn: (id: number) => T,
-  maxSize: number
+  maxSize: number,
+  resetFn?: (obj: T) => void
 ) {
   const poolRef = useRef<T[]>([]);
   const nextIdRef = useRef(0);
@@ -16,10 +17,11 @@ export function useObjectPool<T extends Poolable>(
     // Try to find an inactive object
     const inactive = poolRef.current.find(obj => !obj.active);
     if (inactive) {
+      if (resetFn) resetFn(inactive); // Reset stale data before reuse
       inactive.active = true;
       return inactive;
     }
-    
+
     // Create new if under max size
     if (poolRef.current.length < maxSize) {
       const newObj = createFn(nextIdRef.current++);
@@ -27,10 +29,10 @@ export function useObjectPool<T extends Poolable>(
       poolRef.current.push(newObj);
       return newObj;
     }
-    
+
     // Pool exhausted
     return null;
-  }, [createFn, maxSize]);
+  }, [createFn, maxSize, resetFn]);
 
   const release = useCallback((obj: T) => {
     obj.active = false;

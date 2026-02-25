@@ -111,7 +111,7 @@ export const GAME_CONFIG = {
   
   // Post-Victory Breather
   POST_VICTORY_BREATHER_DURATION: 4.0,
-  BREATHER_SPAWN_REDUCTION: 0.40,
+  BREATHER_SPAWN_REDUCTION: 0.20,
   
   // ─────────────────────────────────────────────────────────────
   // TRAVEL
@@ -400,7 +400,7 @@ export const MINI_RUSH_CONFIG = {
 export const BOMB_SILENCE_BY_STAGE = [1.5, 1.0, 0.6, 0.6, 0.6] as const;
 
 // Per-stage latched tick damage multiplier
-export const LATCH_DAMAGE_MULT_BY_STAGE = [1.0, 1.0, 1.25, 1.5, 1.75] as const;
+export const LATCH_DAMAGE_MULT_BY_STAGE = [1.0, 1.0, 1.1, 1.3, 1.6] as const;
 
 // Colors (HSL values matching index.css)
 export const COLORS = {

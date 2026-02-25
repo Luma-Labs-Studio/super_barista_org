@@ -755,6 +755,26 @@ function drawProjectile(ctx: CanvasRenderingContext2D, proj: Projectile) {
     ctx.arc(proj.x, proj.y - proj.radius * 0.3, proj.radius * 0.6, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
+  } else if (proj.isEspresso) {
+    // Espresso projectile: small amber/brown rapid-fire bullet with motion trail
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    // Motion trail (elongated behind bullet)
+    ctx.fillStyle = 'hsla(25, 80%, 40%, 0.3)';
+    ctx.beginPath();
+    ctx.ellipse(proj.x - 4, proj.y, proj.radius * 2.5, proj.radius * 1.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Main bullet (small round)
+    ctx.fillStyle = 'hsl(25, 85%, 35%)'; // dark espresso color
+    ctx.beginPath();
+    ctx.arc(proj.x, proj.y, proj.radius * 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    // Bright highlight
+    ctx.fillStyle = 'hsl(30, 70%, 65%)';
+    ctx.beginPath();
+    ctx.arc(proj.x + 0.5, proj.y - 0.5, proj.radius * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   } else if (proj.isBrew) {
     // Brew projectile: large bright cream/white blob with glow
     ctx.save();

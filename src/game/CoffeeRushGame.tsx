@@ -72,6 +72,7 @@ const createProjectile = (id: number): Projectile => ({
   pierce: false,
   isStar: false,
   isBrew: false,
+  isEspresso: false,
   isIce: false,
   hitGate: false,
 });
@@ -105,6 +106,31 @@ const createFloatingDamage = (id: number): FloatingDamage => ({
   fontSize: 16,
   active: false,
 });
+
+// Pool reset functions — clear stale data when reusing pooled objects
+const resetProjectile = (p: Projectile) => {
+  p.x = 0; p.y = 0; p.targetX = 0; p.targetY = 0;
+  p.speed = 0; p.damage = 0; p.radius = GAME_CONFIG.PROJECTILE_RADIUS;
+  p.pierce = false; p.isStar = false; p.isBrew = false;
+  p.isEspresso = false; p.isIce = false; p.hitGate = false;
+};
+const resetEnemy = (e: Enemy) => {
+  e.x = 0; e.y = 0; e.hp = 0; e.maxHp = 0; e.speed = 0;
+  e.isServed = false; e.servedTimer = 0; e.state = 'WALKING';
+  e.latchedTimer = 0; e.queuePosition = 0; e.kind = 'NORMAL';
+  e.latchOrder = 0; e.shieldHp = 0; e.slowTimer = 0; e.slowFactor = 1;
+};
+const resetParticle = (p: Particle) => {
+  p.x = 0; p.y = 0; p.vx = 0; p.vy = 0;
+  p.life = 0; p.maxLife = 1; p.type = 'sparkle'; p.size = 5;
+};
+const resetTip = (t: TipDrop) => {
+  t.x = 0; t.y = 0; t.targetY = 0; t.value = 0; t.opacity = 1;
+};
+const resetFloatingDamage = (f: FloatingDamage) => {
+  f.x = 0; f.y = 0; f.value = 0; f.life = 0; f.maxLife = 1;
+  f.fontSize = 16; f.color = '#ffffff';
+};
 
 // Get stage config (1-indexed)
 const getStage = (index: number) => STAGES[Math.min(index - 1, STAGES.length - 1)];
@@ -287,12 +313,12 @@ export const CoffeeRushGame: React.FC = () => {
     };
   }, []);
   
-  // Object pools
-  const enemyPool = useObjectPool(createEnemy, GAME_CONFIG.MAX_ENEMIES);
-  const projectilePool = useObjectPool(createProjectile, 80);
-  const tipPool = useObjectPool(createTip, 30);
-  const particlePool = useObjectPool(createParticle, GAME_CONFIG.MAX_PARTICLES);
-  const floatingDamagePool = useObjectPool(createFloatingDamage, 20);
+  // Object pools (with reset functions to prevent stale data on reuse)
+  const enemyPool = useObjectPool(createEnemy, GAME_CONFIG.MAX_ENEMIES, resetEnemy);
+  const projectilePool = useObjectPool(createProjectile, 80, resetProjectile);
+  const tipPool = useObjectPool(createTip, 30, resetTip);
+  const particlePool = useObjectPool(createParticle, GAME_CONFIG.MAX_PARTICLES, resetParticle);
+  const floatingDamagePool = useObjectPool(createFloatingDamage, 20, resetFloatingDamage);
   
   const initGame = useCallback(() => {
     const progression = loadProgression();
