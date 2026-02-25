@@ -67,8 +67,6 @@ import {
 import {
   spawnEnemy as _spawnEnemy,
   updateSiegeSpawning,
-  updateTravelSpawning,
-  updateBreatherSpawning,
 } from './systems/spawning';
 import { updateEnemies } from './systems/enemies';
 import {
@@ -79,6 +77,14 @@ import {
   handleIceStorm as _handleIceStorm,
   updateWeaponPassives,
 } from './systems/weapons';
+import { updateGateSystem } from './systems/gate';
+import {
+  updateTravelPhase,
+  updateApproachPhase,
+  updateVictoryPhase,
+  updateBreatherPhase,
+} from './systems/phases';
+import { updateBossSystem } from './systems/boss';
 
 export const CoffeeRushGame: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -649,31 +655,7 @@ export const CoffeeRushGame: React.FC = () => {
     }
   }, []);
   
-  // ═══════════════════════════════════════════════════════════════════════
-  // CREATE GATE BUILDING
-  // ═══════════════════════════════════════════════════════════════════════
-  const createGateBuilding = useCallback((si: number) => {
-    const stage = getStage(si);
-    if (stage.isBoss || !stage.gateHP) return null;
-    
-    const groundY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
-    const gate: GateBuilding = {
-      hp: stage.gateHP,
-      maxHp: stage.gateHP,
-      x: GAME_CONFIG.CANVAS_WIDTH - GAME_CONFIG.GATE_BUILDING_X_OFFSET,
-      y: groundY - GAME_CONFIG.GATE_BUILDING_HEIGHT,
-      width: GAME_CONFIG.GATE_BUILDING_WIDTH,
-      height: GAME_CONFIG.GATE_BUILDING_HEIGHT,
-      isDestroyed: false,
-      stageIndex: si,
-      breathingActive: false,
-      breathingTimer: 0,
-      crossedThresholds: [],
-      crumbleTimer: 0,
-      lastHitTime: 0,
-    };
-    return gate;
-  }, []);
+  // createGateBuilding — delegated to systems/gate.ts
   
   // ═══════════════════════════════════════════════════════════════════════
   // GAME LOOP
@@ -753,99 +735,14 @@ export const CoffeeRushGame: React.FC = () => {
     }
     
     // ═══════════════════════════════════════════════════════════════════
-    // TRAVEL PHASE
+    // PHASE UPDATES (delegated to systems/phases.ts, gate.ts, boss.ts)
     // ═══════════════════════════════════════════════════════════════════
-    if (playPhaseRef.current === 'TRAVEL') {
-      travelTimerRef.current -= deltaTime;
+    updateTravelPhase(refs, deltaTime, currentTime, setPlayPhase, setGateBuildingState);
+    updateApproachPhase(refs, deltaTime, setPlayPhase);
 
-      // Spawn scheduling (delegated to spawning system)
-      updateTravelSpawning(refs, currentTime);
-
-      // Phase transition
-      if (travelTimerRef.current <= 0) {
-        const si = stageIndexRef.current;
-        const stage = getStage(si);
-
-        if (si > 1 && stage.isBoss) {
-          playPhaseRef.current = 'BOSS';
-          setPlayPhase('BOSS');
-        } else {
-          // Transition to APPROACH (gate slides in)
-          console.log('STATE -> APPROACH' + (si > 1 ? ' (Stage ' + si + ')' : ''));
-          playPhaseRef.current = 'APPROACH';
-          setPlayPhase('APPROACH');
-          const gate = createGateBuilding(si > 1 ? si : 1);
-          if (gate) {
-            gate.x = GAME_CONFIG.GATE_START_X;
-            gateBuildingRef.current = gate;
-            setGateBuildingState(gate);
-          }
-          travelTimerRef.current = GAME_CONFIG.APPROACH_DURATION;
-        }
-      }
-    }
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // APPROACH PHASE (all gate stages: gate slides in)
-    // ═══════════════════════════════════════════════════════════════════
-    if (playPhaseRef.current === 'APPROACH') {
-      travelTimerRef.current -= deltaTime;
-      
-      // Lerp gate to final position
-      const gate = gateBuildingRef.current;
-      if (gate) {
-        const finalX = GAME_CONFIG.CANVAS_WIDTH - GAME_CONFIG.GATE_BUILDING_X_OFFSET;
-        const progress = 1 - Math.max(0, travelTimerRef.current / GAME_CONFIG.APPROACH_DURATION);
-        gate.x = GAME_CONFIG.GATE_START_X + (finalX - GAME_CONFIG.GATE_START_X) * Math.min(1, progress);
-      }
-      
-      // No enemy spawning during approach
-      
-      if (travelTimerRef.current <= 0) {
-        // Gate in position, start siege
-        if (gate) {
-          gate.x = GAME_CONFIG.CANVAS_WIDTH - GAME_CONFIG.GATE_BUILDING_X_OFFSET;
-        }
-        console.log('STATE -> SIEGE (Stage ' + stageIndexRef.current + ')');
-        playPhaseRef.current = 'SIEGE';
-        setPlayPhase('SIEGE');
-        lastSpawnRef.current = timeRef.current;
-        // Init wave refs for wave-based stages (Stage 1 & 2)
-        if (stageIndexRef.current === 1 || stageIndexRef.current === 2) {
-          stage1WaveRef.current = { spawned: 0, breatherTimer: 0 };
-        }
-        bombSilenceTimerRef.current = 0;
-      }
-    }
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // VICTORY PHASE (all gate stages: gate destroyed cleanup)
-    // ═══════════════════════════════════════════════════════════════════
-    if (playPhaseRef.current === 'VICTORY') {
-      gateCleanupTimerRef.current -= deltaTime;
-      
-      // Fade remaining enemies
-      enemyPool.getActive().forEach(enemy => {
-        if (enemy.state !== 'SERVED' && !enemy.isServed) {
-          enemy.hp = 0;
-          enemy.state = 'SERVED';
-          enemy.isServed = true;
-          enemy.servedTimer = 0.3;
-        }
-      });
-      
-      if (gateCleanupTimerRef.current <= 0) {
-        // Transition to BREATHER (pacing window before next TRAVEL)
-        console.log('STATE -> BREATHER (after Stage ' + stageIndexRef.current + ')');
-        playPhaseRef.current = 'BREATHER';
-        setPlayPhase('BREATHER');
-        travelTimerRef.current = GAME_CONFIG.POST_VICTORY_BREATHER_DURATION;
-        gateBuildingRef.current = null;
-        setGateBuildingState(null);
-        lastSpawnRef.current = timeRef.current;
-      }
-      
-      // Render and skip rest of sim
+    const skipRestOfFrame = updateVictoryPhase(refs, deltaTime, setPlayPhase, setGateBuildingState);
+    if (skipRestOfFrame) {
+      // Render and return early (VICTORY phase skips combat simulation)
       ctx.clearRect(0, 0, GAME_CONFIG.CANVAS_WIDTH, GAME_CONFIG.CANVAS_HEIGHT);
       drawGame(ctx, blocks, enemyPool.getActive(), projectilePool.getActive(),
         tipPool.getActive(), particlePool.getActive(), screenShakeRef.current,
@@ -855,176 +752,10 @@ export const CoffeeRushGame: React.FC = () => {
       drawFloatingDamageNumbers(ctx, floatingDamagePool.getActive(), screenShakeRef.current);
       return;
     }
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // BREATHER PHASE (post-victory pacing: running, reduced spawns, no gate)
-    // ═══════════════════════════════════════════════════════════════════
-    if (playPhaseRef.current === 'BREATHER') {
-      travelTimerRef.current -= deltaTime;
 
-      // Spawn scheduling (delegated to spawning system)
-      updateBreatherSpawning(refs, currentTime);
-
-      if (travelTimerRef.current <= 0) {
-        // Advance to next stage and enter TRAVEL
-        const nextStage = stageIndexRef.current + 1;
-        const nextStageConfig = getStage(nextStage);
-        stageIndexRef.current = nextStage;
-        setStageIndex(nextStage);
-        
-        if (nextStageConfig.isBoss) {
-          travelTimerRef.current = GAME_CONFIG.TRAVEL_DURATION;
-        } else {
-          travelTimerRef.current = TRAVEL_DURATION_BY_STAGE[nextStage - 1] ?? GAME_CONFIG.TRAVEL_DURATION;
-        }
-        playPhaseRef.current = 'TRAVEL';
-        setPlayPhase('TRAVEL');
-        console.log('STATE -> TRAVEL (Stage ' + nextStage + ')');
-      }
-    }
-    
-    // (Duplicate gate cleanup block removed — VICTORY phase handles all post-gate transitions)
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // BOSS SPAWN LOGIC
-    // ═══════════════════════════════════════════════════════════════════
-    if (playPhaseRef.current === 'BOSS') {
-      if (bossIncomingRef.current > 0) {
-        bossIncomingRef.current -= deltaTime;
-        if (bossIncomingRef.current <= 0) {
-          bossIncomingRef.current = -1;
-          const bossEnemy = enemyPool.acquire();
-          if (bossEnemy) {
-            const groundY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
-            const bossHP = getStage(6).bossHP ?? 10000;
-            bossEnemy.kind = 'BOSS';
-            bossEnemy.x = GAME_CONFIG.CANVAS_WIDTH + 50;
-            bossEnemy.y = groundY;
-            bossEnemy.maxHp = bossHP;
-            bossEnemy.hp = bossHP;
-            bossEnemy.speed = GAME_CONFIG.ENEMY_BASE_SPEED * GAME_CONFIG.BOSS_SPEED_MULT;
-            bossEnemy.width = Math.floor(GAME_CONFIG.ENEMY_WIDTH * GAME_CONFIG.BOSS_SIZE_MULT);
-            bossEnemy.height = Math.floor(GAME_CONFIG.ENEMY_HEIGHT * GAME_CONFIG.BOSS_SIZE_MULT);
-            bossEnemy.isServed = false;
-            bossEnemy.servedTimer = 0;
-            bossEnemy.state = 'WALKING';
-            bossEnemy.latchedTimer = 0;
-            bossEnemy.latchOrder = 0;
-            bossEnemyRef.current = bossEnemy;
-            bossStateRef.current = {
-              isActive: true, hp: bossHP, maxHp: bossHP,
-              spawnedAt: currentTime, addSpawnTimer: 0,
-              phase: 1, phaseTransitioned: [false, false, false],
-            };
-            telemetryRef.current.enemiesSpawned.boss++;
-          }
-        }
-      } else if (!bossStateRef.current.isActive && bossEnemyRef.current === null && bossIncomingRef.current === 0) {
-        bossIncomingRef.current = GAME_CONFIG.BOSS_INCOMING_BANNER_DURATION;
-      }
-
-      // Update boss state + phase transitions
-      if (bossStateRef.current.isActive && bossEnemyRef.current) {
-        const boss = bossEnemyRef.current;
-        bossStateRef.current.hp = boss.hp;
-
-        if (boss.hp <= 0 || boss.isServed) {
-          bossStateRef.current.isActive = false;
-          bossEnemyRef.current = null;
-          handleChapterClear();
-          return;
-        }
-
-        // Boss Phase System: check HP thresholds for phase transitions
-        const hpPercent = boss.hp / boss.maxHp;
-        const bs = bossStateRef.current;
-
-        // Phase 4: Enrage (25% HP)
-        if (hpPercent <= GAME_CONFIG.BOSS_PHASE4_THRESHOLD && !bs.phaseTransitioned[2]) {
-          bs.phase = 4;
-          bs.phaseTransitioned[2] = true;
-          screenShakeRef.current = { x: 0, y: 0, duration: 0.5 };
-          spawnParticles(boss.x, boss.y - boss.height / 2, 'confetti', 15);
-        }
-        // Phase 3: Speed + Damage (50% HP)
-        else if (hpPercent <= GAME_CONFIG.BOSS_PHASE3_THRESHOLD && !bs.phaseTransitioned[1]) {
-          bs.phase = 3;
-          bs.phaseTransitioned[1] = true;
-          screenShakeRef.current = { x: 0, y: 0, duration: 0.4 };
-          spawnParticles(boss.x, boss.y - boss.height / 2, 'steam', 10);
-        }
-        // Phase 2: Extra spawns (75% HP)
-        else if (hpPercent <= GAME_CONFIG.BOSS_PHASE2_THRESHOLD && !bs.phaseTransitioned[0]) {
-          bs.phase = 2;
-          bs.phaseTransitioned[0] = true;
-          screenShakeRef.current = { x: 0, y: 0, duration: 0.3 };
-          spawnParticles(boss.x, boss.y - boss.height / 2, 'steam', 8);
-        }
-
-        // Phase-based add spawning (phases 2-4 spawn extra enemies)
-        if (bs.phase >= 2) {
-          const spawnInterval = bs.phase === 4 ? GAME_CONFIG.BOSS_PHASE4_SPAWN_INTERVAL
-            : bs.phase === 3 ? GAME_CONFIG.BOSS_PHASE3_SPAWN_INTERVAL
-            : GAME_CONFIG.BOSS_PHASE2_SPAWN_INTERVAL;
-
-          bs.addSpawnTimer += deltaTime;
-          if (bs.addSpawnTimer >= spawnInterval) {
-            bs.addSpawnTimer -= spawnInterval;
-            spawnEnemy(); // Spawn an add
-          }
-        }
-      }
-    }
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // SIEGE: Gate breathing windows
-    // ═══════════════════════════════════════════════════════════════════
-    const gate = gateBuildingRef.current;
-    if (gate && !gate.isDestroyed && playPhaseRef.current === 'SIEGE') {
-      // Track time at gate
-      const si = stageIndexRef.current - 1;
-      if (si >= 0 && si < 5) gateTimeSpentRef.current[si] += deltaTime;
-      
-      // Check breathing thresholds
-      const hpPercent = gate.hp / gate.maxHp;
-      for (const threshold of GAME_CONFIG.GATE_BREATHING_THRESHOLDS) {
-        if (hpPercent <= threshold && !gate.crossedThresholds.includes(threshold)) {
-          gate.crossedThresholds.push(threshold);
-          gate.breathingActive = true;
-          gate.breathingTimer = GAME_CONFIG.GATE_BREATHING_SLOWDOWN_DURATION;
-        }
-      }
-      
-      if (gate.breathingActive) {
-        gate.breathingTimer -= deltaTime;
-        if (gate.breathingTimer <= 0) {
-          gate.breathingActive = false;
-        }
-      }
-      
-      // Check gate destruction
-      if (gate.hp <= 0) {
-        gate.isDestroyed = true;
-        gateDestroyedRef.current[stageIndexRef.current - 1] = true;
-        
-        // Award lump sum
-        const stage = getStage(stageIndexRef.current);
-        coinsFromGateLumpsRef.current += stage.gateLumpSum;
-        tipsRef.current += stage.gateLumpSum;
-        setTips(tipsRef.current);
-        
-        // Victory pulse
-        spawnParticles(gate.x + gate.width / 2, gate.y, 'crumble', 15);
-        spawnParticles(gate.x + gate.width / 2, gate.y + gate.height / 2, 'confetti', 20);
-        screenShakeRef.current = { x: 0, y: 0, duration: 0.5 };
-        
-        // All gate stages: use VICTORY phase
-        console.log('STATE -> VICTORY (Stage ' + stageIndexRef.current + ')');
-        playPhaseRef.current = 'VICTORY';
-        setPlayPhase('VICTORY');
-        gateCleanupTimerRef.current = GAME_CONFIG.GATE_CLEANUP_DURATION;
-      }
-    }
+    updateBreatherPhase(refs, deltaTime, currentTime, setStageIndex, setPlayPhase);
+    updateBossSystem(refs, deltaTime, currentTime, handleChapterClear);
+    updateGateSystem(refs, deltaTime, setTips, setPlayPhase, setGateBuildingState);
     
     // SPAWNING — siege phase (delegated to spawning system)
     updateSiegeSpawning(refs, currentTime, deltaTime);
@@ -1033,6 +764,7 @@ export const CoffeeRushGame: React.FC = () => {
     updateAutoAttack(refs, currentTime, isStressTest);
     
     // WEAPON PASSIVES (delegated to weapons system)
+    const enemies = refs.enemyPool.getActive().filter(e => !e.isServed && e.state !== 'SERVED');
     updateWeaponPassives(refs, deltaTime, enemies);
 
     // UPDATE PROJECTILES (delegated to combat system)
@@ -1072,8 +804,7 @@ export const CoffeeRushGame: React.FC = () => {
     drawFloatingDamageNumbers(ctx, floatingDamagePool.getActive(), screenShakeRef.current);
   }, [
     enemyPool, projectilePool, tipPool, particlePool, floatingDamagePool,
-    spawnEnemy, fireProjectile, spawnParticles, spawnTip, spawnFloatingDamage,
-    handleGameOver, handleChapterClear, createGateBuilding,
+    handleGameOver, handleChapterClear, isStressTest,
   ]);
   
   useGameLoop(gameLoop, gameState === 'PLAY' && !isPaused);
