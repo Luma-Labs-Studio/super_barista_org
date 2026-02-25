@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { GAME_CONFIG, COLORS, STAGES, TRAVEL_DURATION_BY_STAGE, BOMB_SILENCE_BY_STAGE, MINI_RUSH_CONFIG, LATCH_DAMAGE_MULT_BY_STAGE } from './config';
+import { GAME_CONFIG, COLORS, STAGES, TRAVEL_DURATION_BY_STAGE, BOMB_SILENCE_BY_STAGE } from './config';
 import { drawGame, drawMenuScene, drawFloatingDamageNumbers, resetRendererState } from './renderer';
 import { useGameLoop } from './useGameLoop';
 import { useObjectPool } from './useObjectPool';
@@ -27,7 +27,6 @@ import type {
   GateBuilding,
   CartBlock,
   Enemy,
-  EnemyKind,
   Projectile,
   TipDrop,
   Particle,
@@ -65,6 +64,13 @@ import {
   updateAutoAttack,
   updateProjectiles,
 } from './systems/combat';
+import {
+  spawnEnemy as _spawnEnemy,
+  updateSiegeSpawning,
+  updateTravelSpawning,
+  updateBreatherSpawning,
+} from './systems/spawning';
+import { updateEnemies } from './systems/enemies';
 
 export const CoffeeRushGame: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -573,78 +579,10 @@ export const CoffeeRushGame: React.FC = () => {
   const handleHome = useCallback(() => setGameState('MENU'), []);
   
   // ═══════════════════════════════════════════════════════════════════════
-  // SPAWN ENEMY
-  // ═══════════════════════════════════════════════════════════════════════
+  // SPAWN ENEMY (delegated to spawning system)
   const spawnEnemy = useCallback(() => {
-    const activeCount = enemyPool.getActive().length;
-    if (activeCount >= GAME_CONFIG.MAX_ENEMIES) return;
-
-    const enemy = enemyPool.acquire();
-    if (!enemy) return;
-
-    const stage = getStage(stageIndexRef.current);
-    const groundY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
-
-    // Determine enemy type based on spawn index and stage schedule
-    spawnIndexRef.current++;
-    const idx = spawnIndexRef.current;
-
-    // Priority: Heavy > Shielded > Exploder > Speeder > Normal
-    // Only one special type per spawn — first match wins
-    let kind: EnemyKind = 'NORMAL';
-    if (stage.heavyEvery > 0 && idx % stage.heavyEvery === 0) {
-      kind = 'HEAVY';
-    } else if (stage.shieldedEvery > 0 && idx % stage.shieldedEvery === 0) {
-      kind = 'SHIELDED';
-    } else if (stage.exploderEvery > 0 && idx % stage.exploderEvery === 0) {
-      kind = 'EXPLODER';
-    } else if (stage.speederEvery > 0 && idx % stage.speederEvery === 0) {
-      kind = 'SPEEDER';
-    }
-
-    enemy.kind = kind;
-
-    // Telemetry
-    if (kind === 'HEAVY') telemetryRef.current.enemiesSpawned.heavy++;
-    else telemetryRef.current.enemiesSpawned.normal++; // all non-heavy counted as normal for now
-
-    // Per-kind multipliers
-    let hpMult = 1, speedMult = 1, sizeMult = 1;
-    switch (kind) {
-      case 'HEAVY':
-        hpMult = GAME_CONFIG.HEAVY_HP_MULT; speedMult = GAME_CONFIG.HEAVY_SPEED_MULT; sizeMult = GAME_CONFIG.HEAVY_SIZE_MULT;
-        break;
-      case 'SPEEDER':
-        hpMult = GAME_CONFIG.SPEEDER_HP_MULT; speedMult = GAME_CONFIG.SPEEDER_SPEED_MULT; sizeMult = GAME_CONFIG.SPEEDER_SIZE_MULT;
-        break;
-      case 'SHIELDED':
-        hpMult = GAME_CONFIG.SHIELDED_HP_MULT; speedMult = GAME_CONFIG.SHIELDED_SPEED_MULT; sizeMult = GAME_CONFIG.SHIELDED_SIZE_MULT;
-        break;
-      case 'EXPLODER':
-        hpMult = GAME_CONFIG.EXPLODER_HP_MULT; speedMult = GAME_CONFIG.EXPLODER_SPEED_MULT; sizeMult = GAME_CONFIG.EXPLODER_SIZE_MULT;
-        break;
-    }
-
-    enemy.x = GAME_CONFIG.CANVAS_WIDTH + 30;
-    enemy.y = groundY;
-    enemy.maxHp = Math.floor(GAME_CONFIG.ENEMY_BASE_HP * stage.enemyHpMult * hpMult);
-    enemy.hp = enemy.maxHp;
-    enemy.speed = GAME_CONFIG.ENEMY_BASE_SPEED * stage.enemySpeedMult * speedMult;
-    enemy.width = Math.floor(GAME_CONFIG.ENEMY_WIDTH * sizeMult);
-    enemy.height = Math.floor(GAME_CONFIG.ENEMY_HEIGHT * sizeMult);
-    enemy.isServed = false;
-    enemy.servedTimer = 0;
-    enemy.state = 'WALKING';
-    enemy.latchedTimer = 0;
-    enemy.queuePosition = 0;
-    enemy.latchOrder = 0;
-    enemy.slowTimer = 0;
-    enemy.slowFactor = 1;
-
-    // Shielded: extra armor HP
-    enemy.shieldHp = kind === 'SHIELDED'
-      ? Math.floor(enemy.maxHp * GAME_CONFIG.SHIELDED_ARMOR_HP_MULT) : 0;
-  }, [enemyPool]);
+    _spawnEnemy(refs);
+  }, []);
   
   const fireProjectile = useCallback((targetEnemy: Enemy, pierce = false, isStar = false) => {
     _fireProjectile(refs, targetEnemy, isStressTest, pierce, isStar);
@@ -1059,70 +997,30 @@ export const CoffeeRushGame: React.FC = () => {
     // ═══════════════════════════════════════════════════════════════════
     if (playPhaseRef.current === 'TRAVEL') {
       travelTimerRef.current -= deltaTime;
-      
-      const isStage1 = stageIndexRef.current === 1;
-      
-      if (isStage1) {
-        // Stage 1 pilot: 10s travel with enemy spawning (no despawn)
-        // Spawn enemies during travel (same logic as siege spawning)
-        const stage = getStage(1);
-        const effectiveInterval = Math.max(GAME_CONFIG.MIN_SPAWN_INTERVAL, stage.spawnInterval);
-        if (currentTime - lastSpawnRef.current > effectiveInterval / 1000) {
-          spawnEnemy();
-          lastSpawnRef.current = currentTime;
-        }
-        
-        if (travelTimerRef.current <= 0) {
-          console.log('STATE -> APPROACH');
+
+      // Spawn scheduling (delegated to spawning system)
+      updateTravelSpawning(refs, currentTime);
+
+      // Phase transition
+      if (travelTimerRef.current <= 0) {
+        const si = stageIndexRef.current;
+        const stage = getStage(si);
+
+        if (si > 1 && stage.isBoss) {
+          playPhaseRef.current = 'BOSS';
+          setPlayPhase('BOSS');
+        } else {
+          // Transition to APPROACH (gate slides in)
+          console.log('STATE -> APPROACH' + (si > 1 ? ' (Stage ' + si + ')' : ''));
           playPhaseRef.current = 'APPROACH';
           setPlayPhase('APPROACH');
-          // Create gate at far right for slide-in
-          const gate = createGateBuilding(1);
+          const gate = createGateBuilding(si > 1 ? si : 1);
           if (gate) {
             gate.x = GAME_CONFIG.GATE_START_X;
             gateBuildingRef.current = gate;
             setGateBuildingState(gate);
           }
           travelTimerRef.current = GAME_CONFIG.APPROACH_DURATION;
-        }
-      } else {
-        // Stages 2+: travel WITH enemy spawning (no despawn — keeps pressure)
-        // Mini-rush: faster spawning in middle section of travel
-        const si = stageIndexRef.current;
-        const stage = getStage(si);
-        const totalTravelDuration = TRAVEL_DURATION_BY_STAGE[si - 1] ?? GAME_CONFIG.TRAVEL_DURATION;
-        const elapsed = totalTravelDuration - travelTimerRef.current;
-        const rushStart = totalTravelDuration * MINI_RUSH_CONFIG.START_RATIO;
-        const rushEnd = rushStart + MINI_RUSH_CONFIG.DURATION;
-        const isInMiniRush = si >= MINI_RUSH_CONFIG.ENABLED_FROM_STAGE && elapsed >= rushStart && elapsed < rushEnd;
-        
-        const baseInterval = Math.max(GAME_CONFIG.MIN_SPAWN_INTERVAL, stage.spawnInterval);
-        const effectiveInterval = isInMiniRush ? baseInterval * MINI_RUSH_CONFIG.SPAWN_MULT : baseInterval;
-        if (currentTime - lastSpawnRef.current > effectiveInterval / 1000) {
-          spawnEnemy();
-          lastSpawnRef.current = currentTime;
-        }
-        
-        if (travelTimerRef.current <= 0) {
-          const si = stageIndexRef.current;
-          const stage = getStage(si);
-          
-          if (stage.isBoss) {
-            playPhaseRef.current = 'BOSS';
-            setPlayPhase('BOSS');
-          } else {
-            // Transition to APPROACH (gate slides in)
-            console.log('STATE -> APPROACH (Stage ' + si + ')');
-            playPhaseRef.current = 'APPROACH';
-            setPlayPhase('APPROACH');
-            const gate = createGateBuilding(si);
-            if (gate) {
-              gate.x = GAME_CONFIG.GATE_START_X;
-              gateBuildingRef.current = gate;
-              setGateBuildingState(gate);
-            }
-            travelTimerRef.current = GAME_CONFIG.APPROACH_DURATION;
-          }
         }
       }
     }
@@ -1203,16 +1101,10 @@ export const CoffeeRushGame: React.FC = () => {
     // ═══════════════════════════════════════════════════════════════════
     if (playPhaseRef.current === 'BREATHER') {
       travelTimerRef.current -= deltaTime;
-      
-      // Reduced enemy spawning (40% of normal rate = 60% reduction)
-      const stage = getStage(stageIndexRef.current);
-      const baseInterval = Math.max(GAME_CONFIG.MIN_SPAWN_INTERVAL, stage.spawnInterval);
-      const breatherInterval = baseInterval / GAME_CONFIG.BREATHER_SPAWN_REDUCTION; // slower spawns
-      if (currentTime - lastSpawnRef.current > breatherInterval / 1000) {
-        spawnEnemy();
-        lastSpawnRef.current = currentTime;
-      }
-      
+
+      // Spawn scheduling (delegated to spawning system)
+      updateBreatherSpawning(refs, currentTime);
+
       if (travelTimerRef.current <= 0) {
         // Advance to next stage and enter TRAVEL
         const nextStage = stageIndexRef.current + 1;
@@ -1374,66 +1266,8 @@ export const CoffeeRushGame: React.FC = () => {
       }
     }
     
-    // ═══════════════════════════════════════════════════════════════════
-    // SPAWNING (only during SIEGE phase)
-    // ═══════════════════════════════════════════════════════════════════
-    const canSpawn = playPhaseRef.current === 'SIEGE' && gate && !gate.isDestroyed;
-    
-    if (canSpawn) {
-      const si = stageIndexRef.current;
-      const isWaveSiege = si === 1 || si === 2;
-      
-      if (isWaveSiege) {
-        // Wave-based spawning with breather windows (Stage 1 & 2)
-        const waveSize = si === 1 ? GAME_CONFIG.STAGE1_WAVE_SIZE : GAME_CONFIG.STAGE2_WAVE_SIZE;
-        const waveBreather = si === 1 ? GAME_CONFIG.STAGE1_WAVE_BREATHER : GAME_CONFIG.STAGE2_WAVE_BREATHER;
-        
-        // Bomb silence timer
-        if (bombSilenceTimerRef.current > 0) {
-          bombSilenceTimerRef.current -= deltaTime;
-        } else if (stage1WaveRef.current.breatherTimer > 0) {
-          // Breather between waves
-          stage1WaveRef.current.breatherTimer -= deltaTime;
-          if (stage1WaveRef.current.breatherTimer <= 0) {
-            stage1WaveRef.current.spawned = 0; // Reset for next wave
-          }
-        } else if (stage1WaveRef.current.spawned < waveSize) {
-          // Spawn wave enemies
-          const stage = getStage(si);
-          const effectiveInterval = Math.max(GAME_CONFIG.MIN_SPAWN_INTERVAL, stage.spawnInterval);
-          if (currentTime - lastSpawnRef.current > effectiveInterval / 1000) {
-            spawnEnemy();
-            lastSpawnRef.current = currentTime;
-            stage1WaveRef.current.spawned++;
-          }
-        } else {
-          // Wave fully spawned, check if all dead for breather
-          const aliveEnemies = enemyPool.getActive().filter(e => !e.isServed && e.state !== 'SERVED').length;
-          if (aliveEnemies === 0) {
-            stage1WaveRef.current.breatherTimer = waveBreather;
-          }
-        }
-      } else {
-        // Stages 2+: continuous spawning with bomb silence
-        if (bombSilenceTimerRef.current > 0) {
-          bombSilenceTimerRef.current -= deltaTime;
-        } else {
-          const stage = getStage(stageIndexRef.current);
-          let spawnInterval = stage.spawnInterval;
-          
-          if (gate!.breathingActive) {
-            spawnInterval *= GAME_CONFIG.GATE_BREATHING_SPAWN_MULT;
-          }
-          
-          const effectiveInterval = Math.max(GAME_CONFIG.MIN_SPAWN_INTERVAL, spawnInterval);
-          
-          if (currentTime - lastSpawnRef.current > effectiveInterval / 1000) {
-            spawnEnemy();
-            lastSpawnRef.current = currentTime;
-          }
-        }
-      }
-    }
+    // SPAWNING — siege phase (delegated to spawning system)
+    updateSiegeSpawning(refs, currentTime, deltaTime);
     
     // AUTO-ATTACK (delegated to combat system)
     updateAutoAttack(refs, currentTime, isStressTest);
@@ -1708,225 +1542,8 @@ export const CoffeeRushGame: React.FC = () => {
       });
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // UPDATE ENEMIES (with stacking - enemies attack from bottom up)
-    // ═══════════════════════════════════════════════════════════════════
-    const activeBlocks = blocks.filter(b => !b.destroyed);
-    const cartRightEdge = GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH;
-    const maxLatched = GAME_CONFIG.MAX_LATCHED_ENEMIES;
-    const groundY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
-    const stackSpacing = GAME_CONFIG.ENEMY_STACK_SPACING;
-
-    if (latchedCountRef.current > telemetryRef.current.maxLatchedPeak) {
-      telemetryRef.current.maxLatchedPeak = latchedCountRef.current;
-    }
-    if (latchedCountRef.current >= maxLatched) {
-      telemetryRef.current.timeAtMaxLatched += deltaTime;
-    }
-
-    // Calculate stack positions for latched enemies (sorted by latch order)
-    const latchedEnemies = enemyPool.getActive()
-      .filter(e => e.state === 'LATCHED' && e.hp > 0)
-      .sort((a, b) => a.latchOrder - b.latchOrder);
-    latchedEnemies.forEach((enemy, stackIdx) => {
-      // Position enemies in a vertical stack: bottom-up from ground level
-      enemy.y = groundY - stackIdx * stackSpacing;
-    });
-
-    let queuedCount = 0;
-
-    enemyPool.getActive().forEach(enemy => {
-      // SERVED state
-      if (enemy.state === 'SERVED' || enemy.isServed) {
-        enemy.servedTimer -= deltaTime;
-        enemy.x += GAME_CONFIG.SERVED_EXIT_SPEED * deltaTime;
-        if (enemy.servedTimer <= 0 || enemy.x > GAME_CONFIG.CANVAS_WIDTH + 50) {
-          enemyPool.release(enemy);
-        }
-        return;
-      }
-
-      // Check if just killed (HP <= 0)
-      if (enemy.hp <= 0) {
-        if (enemy.state === 'LATCHED') {
-          const slotsUsed = enemy.kind === 'BOSS' ? GAME_CONFIG.BOSS_LATCH_SLOTS : 1;
-          latchedCountRef.current = Math.max(0, latchedCountRef.current - slotsUsed);
-        }
-
-        enemy.state = 'SERVED';
-        enemy.isServed = true;
-        enemy.servedTimer = GAME_CONFIG.SERVED_EXIT_DURATION;
-        customersServedRef.current++;
-
-        // Track kills
-        if (enemy.kind === 'BOSS') telemetryRef.current.enemiesKilled.boss++;
-        else if (enemy.kind === 'HEAVY') telemetryRef.current.enemiesKilled.heavy++;
-        else telemetryRef.current.enemiesKilled.normal++;
-
-        // Drop coins (stage-based)
-        const stage = getStage(stageIndexRef.current);
-        const coinDrop = enemy.kind === 'BOSS' ? (stage.bossDropCoins ?? stage.enemyDropCoins) : stage.enemyDropCoins;
-        coinsFromKillsRef.current += coinDrop;
-        tipsRef.current += coinDrop;
-        setTips(tipsRef.current);
-
-        // Spawn tip visual
-        spawnTip(enemy.x, enemy.y - enemy.height, coinDrop);
-
-        // Celebration particles
-        const pCount = enemy.kind === 'BOSS' ? 10 : 3;
-        spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'heart', pCount);
-        spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'sparkle', pCount + 2);
-        if (enemy.kind === 'BOSS') spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'confetti', 20);
-
-        // EXPLODER: on death, deal blast damage to nearby blocks
-        if (enemy.kind === 'EXPLODER' && activeBlocks.length > 0) {
-          screenShakeRef.current = { x: 0, y: 0, duration: 0.25 };
-          spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'confetti', 15);
-          spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'steam', 10);
-          // Damage closest block if within blast radius
-          const blastX = enemy.x;
-          const blastY = enemy.y - enemy.height / 2;
-          activeBlocks.forEach(b => {
-            const bx = GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH / 2;
-            const by = b.y + GAME_CONFIG.BLOCK_HEIGHT / 2;
-            const dist = Math.sqrt((blastX - bx) ** 2 + (blastY - by) ** 2);
-            if (dist < GAME_CONFIG.EXPLODER_BLAST_RADIUS) {
-              b.hp -= GAME_CONFIG.EXPLODER_BLAST_DAMAGE;
-              spawnParticles(bx, by, 'crumble', 4);
-              spawnFloatingDamage(bx, by - 10, GAME_CONFIG.EXPLODER_BLAST_DAMAGE, 'hsl(0, 70%, 55%)');
-            }
-          });
-        }
-        return;
-      }
-
-      // LATCHED state - enemies damage blocks based on their stack height
-      if (enemy.state === 'LATCHED') {
-        enemy.latchedTimer -= deltaTime;
-        if (enemy.latchedTimer <= 0 && activeBlocks.length > 0) {
-          // Find which block this enemy overlaps based on its stack Y position
-          // Enemy center Y = enemy.y - enemy.height / 2
-          const enemyCenterY = enemy.y - enemy.height / 2;
-
-          // Find the block whose vertical range contains the enemy's center
-          // Blocks are sorted by id (0=bottom, higher=upper)
-          let targetBlock = activeBlocks.find(b => {
-            const blockTop = b.y;
-            const blockBottom = b.y + b.height;
-            return enemyCenterY >= blockTop && enemyCenterY <= blockBottom;
-          });
-
-          // Fallback: if enemy is below all blocks, hit bottom block
-          // If enemy is above all blocks, hit top block
-          if (!targetBlock) {
-            if (enemyCenterY > activeBlocks[0].y + activeBlocks[0].height) {
-              targetBlock = activeBlocks[0]; // below all blocks → hit bottom
-            } else {
-              targetBlock = activeBlocks[activeBlocks.length - 1]; // above all → hit top
-            }
-          }
-
-          let tickDamage = GAME_CONFIG.LATCHED_TICK_DAMAGE;
-          // Stage-aware latch damage multiplier (death wall pressure)
-          const stageMult = LATCH_DAMAGE_MULT_BY_STAGE[stageIndexRef.current - 1] ?? 1.0;
-          tickDamage *= stageMult;
-          if (enemy.kind === 'BOSS') {
-            tickDamage *= GAME_CONFIG.BOSS_TICK_DAMAGE_MULT;
-            // Boss phase damage multiplier
-            const bossPhase = bossStateRef.current.phase;
-            if (bossPhase === 4) tickDamage *= GAME_CONFIG.BOSS_PHASE4_DAMAGE_MULT;
-            else if (bossPhase === 3) tickDamage *= GAME_CONFIG.BOSS_PHASE3_DAMAGE_MULT;
-            else if (bossPhase === 2) tickDamage *= GAME_CONFIG.BOSS_PHASE2_DAMAGE_MULT;
-          }
-          else if (enemy.kind === 'HEAVY') tickDamage *= GAME_CONFIG.HEAVY_TICK_DAMAGE_MULT;
-          else if (enemy.kind === 'SPEEDER') tickDamage *= GAME_CONFIG.SPEEDER_TICK_DAMAGE_MULT;
-          else if (enemy.kind === 'SHIELDED') tickDamage *= GAME_CONFIG.SHIELDED_TICK_DAMAGE_MULT;
-          else if (enemy.kind === 'EXPLODER') tickDamage *= GAME_CONFIG.EXPLODER_TICK_DAMAGE_MULT;
-          targetBlock.hp -= tickDamage;
-          enemy.latchedTimer = GAME_CONFIG.LATCHED_TICK_INTERVAL;
-
-          spawnParticles(cartRightEdge, targetBlock.y + GAME_CONFIG.BLOCK_HEIGHT / 2, 'steam', enemy.kind === 'BOSS' ? 5 : 2);
-
-          if (targetBlock.hp <= 0) {
-            targetBlock.destroyed = true;
-            telemetryRef.current.blocksLost++;
-            if (telemetryRef.current.timeToFirstBlockLost < 0) {
-              telemetryRef.current.timeToFirstBlockLost = timeRef.current;
-            }
-
-            // Crumble particles at destroyed block position
-            spawnParticles(GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH / 2, targetBlock.y, 'crumble', 12);
-            spawnParticles(GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH / 2, targetBlock.y, 'steam', 8);
-
-            // Screen shake on block destruction
-            screenShakeRef.current = { x: 0, y: 0, duration: 0.4 };
-
-            // Collapse: blocks above the destroyed one need to fall down
-            // Set collapseOffset for blocks that will visually shift
-            const boxHeight = GAME_CONFIG.BLOCK_HEIGHT - 4;
-            const remainingBlocks = blocks.filter(b => !b.destroyed && b.id > targetBlock.id);
-            remainingBlocks.forEach(b => {
-              // This block needs to drop by one slot visually
-              b.collapseOffset -= boxHeight;
-            });
-
-            // Update game logic Y positions for remaining blocks
-            const newActiveBlocks = blocks.filter(b => !b.destroyed).sort((a, b2) => a.id - b2.id);
-            newActiveBlocks.forEach((b, i) => {
-              b.y = groundY - 30 - (i + 1) * GAME_CONFIG.BLOCK_HEIGHT;
-            });
-
-            if (blocks.filter(b => !b.destroyed).length === 0) {
-              handleGameOver();
-            }
-          }
-        }
-        return;
-      }
-
-      // QUEUED state
-      if (enemy.state === 'QUEUED') {
-        if (latchedCountRef.current < maxLatched) {
-          enemy.state = 'LATCHED';
-          enemy.latchedTimer = GAME_CONFIG.LATCHED_TICK_INTERVAL;
-          enemy.x = cartRightEdge + enemy.width / 2;
-          enemy.latchOrder = latchOrderCounterRef.current++;
-          latchedCountRef.current++;
-        } else {
-          queuedCount++;
-          const targetX = cartRightEdge + enemy.width / 2 + queuedCount * (enemy.width + GAME_CONFIG.LATCHED_QUEUE_SPACING);
-          if (enemy.x > targetX) {
-            enemy.x -= enemy.speed * 0.3 * deltaTime;
-            enemy.x = Math.max(enemy.x, targetX);
-          }
-        }
-        return;
-      }
-
-      // Update slow debuff timer
-      if (enemy.slowTimer > 0) {
-        enemy.slowTimer -= deltaTime;
-        if (enemy.slowTimer <= 0) { enemy.slowTimer = 0; enemy.slowFactor = 1; }
-      }
-
-      // WALKING state
-      const effectiveSpeed = enemy.speed * (enemy.slowTimer > 0 ? enemy.slowFactor : 1);
-      enemy.x -= effectiveSpeed * deltaTime;
-
-      if (enemy.x - enemy.width / 2 < cartRightEdge) {
-        const slotsNeeded = enemy.kind === 'BOSS' ? GAME_CONFIG.BOSS_LATCH_SLOTS : 1;
-        if (latchedCountRef.current + slotsNeeded <= maxLatched && activeBlocks.length > 0) {
-          enemy.state = 'LATCHED';
-          enemy.latchedTimer = GAME_CONFIG.LATCHED_TICK_INTERVAL;
-          enemy.x = cartRightEdge + enemy.width / 2;
-          enemy.latchOrder = latchOrderCounterRef.current++;
-          latchedCountRef.current += slotsNeeded;
-        } else if (activeBlocks.length > 0) {
-          enemy.state = 'QUEUED';
-        }
-      }
-    });
+    // UPDATE ENEMIES (delegated to enemies system)
+    updateEnemies(refs, deltaTime, blocks, handleGameOver, setTips);
     
     // Update VFX (tips, particles, floating damage, screen shake)
     updateVFX(refs, deltaTime);
