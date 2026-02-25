@@ -38,7 +38,7 @@ export const clearPurchaseLog = (): void => {
 };
 
 const STORAGE_KEY = 'coffee-rush-progress';
-const SAVE_VERSION = 16; // v16: Foam→Brew global rename
+const SAVE_VERSION = 17; // v17: Espresso + Ice weapon types
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PROGRESSION DATA SCHEMA (v16)
@@ -68,6 +68,8 @@ export interface ProgressionData {
   // Per-box weapon assignment
   boxWeapons: BoxWeapon[];        // e.g. [null, 'star', 'brew'] — one weapon per box
   brewPerBox: boolean[];           // which boxes have brew
+  espressoPerBox: boolean[];       // which boxes have espresso cannon
+  icePerBox: boolean[];            // which boxes have ice blender
   lastGameMode: GameMode;
   energy: number;
   regenAnchorTs: number | null;
@@ -109,6 +111,8 @@ const DEFAULT_PROGRESSION: ProgressionData = {
   starEvoChoices: [],
   boxWeapons: [null, null, null],
   brewPerBox: [false, false, false],
+  espressoPerBox: [false, false, false],
+  icePerBox: [false, false, false],
   lastGameMode: 'CHAPTER',
   energy: GAME_CONFIG.ENERGY_MAX,
   regenAnchorTs: null,
@@ -128,6 +132,12 @@ export const loadProgression = (): ProgressionData => {
       parsed.brewPerBox = parsed.foamPerBox || [false, false, false];
       delete parsed.foamPerBox;
       parsed.version = 16;
+    }
+    // v16 -> v17 migration: add espresso + ice per-box
+    if (parsed.version === 16) {
+      parsed.espressoPerBox = parsed.espressoPerBox || [false, false, false];
+      parsed.icePerBox = parsed.icePerBox || [false, false, false];
+      parsed.version = 17;
       saveProgression({ ...DEFAULT_PROGRESSION, ...parsed, meta: { ...DEFAULT_PROGRESSION.meta, ...parsed.meta } });
       return { ...DEFAULT_PROGRESSION, ...parsed, meta: { ...DEFAULT_PROGRESSION.meta, ...parsed.meta } };
     }
@@ -163,6 +173,11 @@ export const saveProgression = (data: ProgressionData): void => {
 
 export const getPipCost = (currentPips: number, baseCost: number, costScaling: number): number => {
   return Math.floor(baseCost * Math.pow(costScaling, currentPips));
+};
+
+// TDS-style continuous upgrade cost: linear + quadratic growth
+export const getContinuousUpgradeCost = (level: number, baseCost: number, step: number, accel: number): number => {
+  return Math.floor(baseCost + level * step + level * level * accel);
 };
 
 export const purchasePowerPip = (cost: number): boolean => {
@@ -428,6 +443,42 @@ export const purchaseBrewForBox = (boxIndex: number, cost: number): boolean => {
   current.boxWeapons[boxIndex] = 'brew';
   saveProgression(current);
   logPurchase({ ts: Date.now(), type: 'brew_unlock', target: `brew_box_${boxIndex}`, before: 'locked', after: 'unlocked', beforeValue: 0, afterValue: 1, coinCost: cost, coinsBefore, coinsAfter: current.totalCoins });
+  return true;
+};
+
+export const purchaseEspressoForBox = (boxIndex: number, cost: number): boolean => {
+  const current = loadProgression();
+  if (current.bestStageReached < 4) return false; // Stage 3 Gate must be destroyed
+  if (!current.espressoPerBox) current.espressoPerBox = [false, false, false];
+  if (!current.boxWeapons) current.boxWeapons = [null, null, null];
+  if (boxIndex < 0 || boxIndex >= current.espressoPerBox.length) return false;
+  if (current.espressoPerBox[boxIndex]) return false;
+  if (current.boxWeapons[boxIndex] !== null) return false; // box already has a weapon
+  if (current.totalCoins < cost) return false;
+  const coinsBefore = current.totalCoins;
+  current.totalCoins -= cost;
+  current.espressoPerBox[boxIndex] = true;
+  current.boxWeapons[boxIndex] = 'espresso';
+  saveProgression(current);
+  logPurchase({ ts: Date.now(), type: 'brew_unlock', target: `espresso_box_${boxIndex}`, before: 'locked', after: 'unlocked', beforeValue: 0, afterValue: 1, coinCost: cost, coinsBefore, coinsAfter: current.totalCoins });
+  return true;
+};
+
+export const purchaseIceForBox = (boxIndex: number, cost: number): boolean => {
+  const current = loadProgression();
+  if (current.bestStageReached < 5) return false; // Stage 4 Gate must be destroyed
+  if (!current.icePerBox) current.icePerBox = [false, false, false];
+  if (!current.boxWeapons) current.boxWeapons = [null, null, null];
+  if (boxIndex < 0 || boxIndex >= current.icePerBox.length) return false;
+  if (current.icePerBox[boxIndex]) return false;
+  if (current.boxWeapons[boxIndex] !== null) return false;
+  if (current.totalCoins < cost) return false;
+  const coinsBefore = current.totalCoins;
+  current.totalCoins -= cost;
+  current.icePerBox[boxIndex] = true;
+  current.boxWeapons[boxIndex] = 'ice';
+  saveProgression(current);
+  logPurchase({ ts: Date.now(), type: 'brew_unlock', target: `ice_box_${boxIndex}`, before: 'locked', after: 'unlocked', beforeValue: 0, afterValue: 1, coinCost: cost, coinsBefore, coinsAfter: current.totalCoins });
   return true;
 };
 

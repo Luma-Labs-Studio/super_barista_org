@@ -28,11 +28,11 @@ export interface GateBuilding {
 // ═══════════════════════════════════════════════════════════════════════════════
 // WEAPON SYSTEM
 // ═══════════════════════════════════════════════════════════════════════════════
-export type WeaponType = 'star' | 'brew' | 'minigun' | null;
-export type WeaponAbilityType = 'star_throw' | 'brew_burst' | 'bullet_storm';
+export type WeaponType = 'star' | 'brew' | 'espresso' | 'ice' | 'minigun' | null;
+export type WeaponAbilityType = 'star_throw' | 'brew_burst' | 'espresso_barrage' | 'ice_storm' | 'bullet_storm';
 
 // Per-box weapon assignment: each box can hold at most one weapon
-export type BoxWeapon = 'star' | 'brew' | null;
+export type BoxWeapon = 'star' | 'brew' | 'espresso' | 'ice' | null;
 
 export interface WeaponSlot {
   weaponType: WeaponType;
@@ -90,10 +90,11 @@ export interface CartBlock {
   y: number;
   height: number;
   destroyed: boolean;
+  collapseOffset: number;   // Visual offset during collapse animation (negative = higher than target)
 }
 
 export type EnemyState = 'WALKING' | 'LATCHED' | 'QUEUED' | 'SERVED';
-export type EnemyKind = 'NORMAL' | 'HEAVY' | 'BOSS';
+export type EnemyKind = 'NORMAL' | 'HEAVY' | 'BOSS' | 'SPEEDER' | 'SHIELDED' | 'EXPLODER';
 
 export interface Enemy {
   id: number;
@@ -112,6 +113,10 @@ export interface Enemy {
   latchedTimer: number;
   queuePosition: number;
   kind: EnemyKind;
+  latchOrder: number;      // Order in which enemy latched (lower = earlier = bottom of stack)
+  shieldHp: number;        // SHIELDED: extra armor HP that absorbs damage first (0 = no shield)
+  slowTimer: number;        // Slow debuff remaining seconds (0 = not slowed)
+  slowFactor: number;       // Speed multiplier while slowed (e.g. 0.5 = half speed)
 }
 
 export interface Projectile {
@@ -127,6 +132,7 @@ export interface Projectile {
   pierce: boolean;
   isStar: boolean;
   isBrew: boolean;          // Visual: render as brew blob
+  isIce: boolean;           // Visual: render as ice drop, applies slow on hit
   hitGate: boolean;         // Prevents pierce projectiles from hitting gate twice
 }
 
@@ -151,6 +157,21 @@ export interface Particle {
   color: string;
   size: number;
   type: 'sparkle' | 'heart' | 'steam' | 'confetti' | 'crumble';
+  active: boolean;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FLOATING DAMAGE NUMBERS (only for big hits: abilities, boss damage, etc.)
+// ═══════════════════════════════════════════════════════════════════════════════
+export interface FloatingDamage {
+  id: number;
+  x: number;
+  y: number;
+  value: number;
+  life: number;
+  maxLife: number;
+  color: string;
+  fontSize: number;
   active: boolean;
 }
 
@@ -288,12 +309,16 @@ export interface RunTelemetry {
 // ═══════════════════════════════════════════════════════════════════════════════
 // BOSS STATE
 // ═══════════════════════════════════════════════════════════════════════════════
+export type BossPhase = 1 | 2 | 3 | 4;
+
 export interface BossState {
   isActive: boolean;
   hp: number;
   maxHp: number;
   spawnedAt: number;
   addSpawnTimer: number;
+  phase: BossPhase;              // Current boss phase (1-4)
+  phaseTransitioned: boolean[];  // Which phase transitions have fired [phase2, phase3, phase4]
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

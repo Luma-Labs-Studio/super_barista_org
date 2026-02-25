@@ -18,6 +18,9 @@ export interface StageConfig {
   enemyDropCoins: number;    // coins dropped per enemy kill
   gateLumpSum: number;       // coins awarded when gate is destroyed
   heavyEvery: number;        // spawn a heavy every N enemies (0 = no heavies)
+  speederEvery: number;      // spawn a speeder every N enemies (0 = no speeders)
+  shieldedEvery: number;     // spawn a shielded every N enemies (0 = no shielded)
+  exploderEvery: number;     // spawn an exploder every N enemies (0 = no exploders)
   // Boss-specific
   bossHP?: number;
   bossDropCoins?: number;
@@ -25,12 +28,13 @@ export interface StageConfig {
 }
 
 export const STAGES: readonly StageConfig[] = [
-  { id: 1, gateHP: 300,   spawnInterval: 900,  enemyHpMult: 1.0,  enemySpeedMult: 1.0,  enemyDropCoins: 1,   gateLumpSum: 40,   heavyEvery: 0 },
-  { id: 2, gateHP: 400,   spawnInterval: 800,  enemyHpMult: 1.15, enemySpeedMult: 1.05, enemyDropCoins: 2,   gateLumpSum: 80,   heavyEvery: 0 },
-  { id: 3, gateHP: 1200,  spawnInterval: 700,  enemyHpMult: 1.6,  enemySpeedMult: 1.15, enemyDropCoins: 5,   gateLumpSum: 180,  heavyEvery: 4 },
-  { id: 4, gateHP: 2500,  spawnInterval: 600,  enemyHpMult: 2.0,  enemySpeedMult: 1.15, enemyDropCoins: 10,  gateLumpSum: 400,  heavyEvery: 5 },
-  { id: 5, gateHP: 4000,  spawnInterval: 500,  enemyHpMult: 2.5,  enemySpeedMult: 1.20, enemyDropCoins: 20,  gateLumpSum: 800,  heavyEvery: 4 },
-  { id: 6, isBoss: true,  spawnInterval: 0,    enemyHpMult: 1.0,  enemySpeedMult: 1.0,  enemyDropCoins: 50,  gateLumpSum: 0,    heavyEvery: 0, bossHP: 10000, bossDropCoins: 50, clearBonus: 1500 },
+  //                                                                                                                    heavy  speeder shielded exploder
+  { id: 1, gateHP: 300,   spawnInterval: 900,  enemyHpMult: 1.0,  enemySpeedMult: 1.0,  enemyDropCoins: 1,   gateLumpSum: 40,   heavyEvery: 0,  speederEvery: 0,  shieldedEvery: 0, exploderEvery: 0 },
+  { id: 2, gateHP: 400,   spawnInterval: 800,  enemyHpMult: 1.15, enemySpeedMult: 1.05, enemyDropCoins: 2,   gateLumpSum: 80,   heavyEvery: 0,  speederEvery: 5,  shieldedEvery: 0, exploderEvery: 0 },
+  { id: 3, gateHP: 1200,  spawnInterval: 700,  enemyHpMult: 1.6,  enemySpeedMult: 1.15, enemyDropCoins: 5,   gateLumpSum: 180,  heavyEvery: 4,  speederEvery: 4,  shieldedEvery: 6, exploderEvery: 0 },
+  { id: 4, gateHP: 2500,  spawnInterval: 600,  enemyHpMult: 2.0,  enemySpeedMult: 1.15, enemyDropCoins: 10,  gateLumpSum: 400,  heavyEvery: 5,  speederEvery: 3,  shieldedEvery: 5, exploderEvery: 7 },
+  { id: 5, gateHP: 4000,  spawnInterval: 500,  enemyHpMult: 2.5,  enemySpeedMult: 1.20, enemyDropCoins: 20,  gateLumpSum: 800,  heavyEvery: 4,  speederEvery: 3,  shieldedEvery: 4, exploderEvery: 5 },
+  { id: 6, isBoss: true,  spawnInterval: 0,    enemyHpMult: 1.0,  enemySpeedMult: 1.0,  enemyDropCoins: 50,  gateLumpSum: 0,    heavyEvery: 0,  speederEvery: 0,  shieldedEvery: 0, exploderEvery: 0, bossHP: 10000, bossDropCoins: 50, clearBonus: 1500 },
 ] as const;
 
 // Gate HP ratios relative to Gate 1 (for easy calibration)
@@ -87,7 +91,7 @@ export const GAME_CONFIG = {
   // ─────────────────────────────────────────────────────────────
   // SKILL: Tonic Bomb + Power System (Uncapped)
   // ─────────────────────────────────────────────────────────────
-  TONIC_BOMB_COST: 3,
+  TONIC_BOMB_COST: 2,
   TONIC_BOMB_RADIUS: 110,
   TONIC_BOMB_DAMAGE: 28,
   POWER_POOL_SOFT_CAP: 999,
@@ -127,12 +131,14 @@ export const GAME_CONFIG = {
   SERVED_EXIT_SPEED: 200,
   
   // ─────────────────────────────────────────────────────────────
-  // LATCHED ENEMY SYSTEM
+  // LATCHED ENEMY SYSTEM (with stacking)
   // ─────────────────────────────────────────────────────────────
-  MAX_LATCHED_ENEMIES: 5,
+  MAX_LATCHED_ENEMIES: 8,            // increased from 5 for stacking (15 was too deadly)
   LATCHED_TICK_INTERVAL: 0.5,
   LATCHED_TICK_DAMAGE: 4,
   LATCHED_QUEUE_SPACING: 12,
+  ENEMY_STACK_SPACING: 28,          // vertical px between stacked enemies (< enemy height = overlap)
+  ENEMY_STACK_DAMAGE_FROM_BOTTOM: true, // enemies attack bottom block first, stack upward
   
   // ─────────────────────────────────────────────────────────────
   // PARTICLES & VFX
@@ -164,17 +170,27 @@ export const GAME_CONFIG = {
   STAR_MAX_EVOS_CH1: 2,
   STAR_DAMAGE_BONUS_PER_PIP: 0.10,
   
-  // Power regen upgrade pips
-  POWER_PIP_PER_EVO: 3,
-  POWER_PIP_BASE_COST: 35,
-  POWER_PIP_COST_SCALING: 1.4,
-  POWER_REGEN_BONUS_PER_PIP: 0.15,
-  
-  // Damage upgrade pips
-  DAMAGE_PIP_PER_EVO: 3,
-  DAMAGE_PIP_BASE_COST: 40,
-  DAMAGE_PIP_COST_SCALING: 1.4,
-  DAMAGE_BONUS_PER_PIP: 0.12,
+  // Power regen upgrade (TDS-style continuous)
+  POWER_PIP_PER_EVO: 3,            // legacy: kept for EVO trigger (every 3 upgrades)
+  POWER_PIP_BASE_COST: 35,         // legacy
+  POWER_PIP_COST_SCALING: 1.4,     // legacy
+  POWER_REGEN_BONUS_PER_PIP: 0.15, // legacy
+  // NEW continuous upgrade costs
+  POWER_UPGRADE_BASE_COST: 9,
+  POWER_UPGRADE_STEP: 2,
+  POWER_UPGRADE_ACCEL: 0.4,
+  POWER_REGEN_PER_UPGRADE: 0.02,   // +0.02/s per upgrade level
+
+  // Damage upgrade (TDS-style continuous)
+  DAMAGE_PIP_PER_EVO: 3,           // legacy: kept for EVO trigger
+  DAMAGE_PIP_BASE_COST: 40,        // legacy
+  DAMAGE_PIP_COST_SCALING: 1.4,    // legacy
+  DAMAGE_BONUS_PER_PIP: 0.12,      // legacy
+  // NEW continuous upgrade costs
+  DAMAGE_UPGRADE_BASE_COST: 9,
+  DAMAGE_UPGRADE_STEP: 2.5,
+  DAMAGE_UPGRADE_ACCEL: 0.4,
+  DAMAGE_FLAT_PER_UPGRADE: 1,      // +1 flat damage per upgrade level
   
   // Block count (cargo boxes)
   BLOCK_COUNT_MAX_LEVEL: 3,
@@ -189,6 +205,33 @@ export const GAME_CONFIG = {
   HEAVY_SIZE_MULT: 1.15,
   
   // ─────────────────────────────────────────────────────────────
+  // SPEEDER ENEMY (fast customer — morning rush)
+  // ─────────────────────────────────────────────────────────────
+  SPEEDER_HP_MULT: 0.6,
+  SPEEDER_SPEED_MULT: 1.8,
+  SPEEDER_TICK_DAMAGE_MULT: 0.8,
+  SPEEDER_SIZE_MULT: 0.85,
+
+  // ─────────────────────────────────────────────────────────────
+  // SHIELDED ENEMY (sleepless, extra grumpy — armored)
+  // ─────────────────────────────────────────────────────────────
+  SHIELDED_HP_MULT: 1.5,
+  SHIELDED_SPEED_MULT: 0.7,
+  SHIELDED_TICK_DAMAGE_MULT: 1.5,
+  SHIELDED_SIZE_MULT: 1.1,
+  SHIELDED_ARMOR_HP_MULT: 0.5,  // Shield HP = 50% of base HP (must break shield first)
+
+  // ─────────────────────────────────────────────────────────────
+  // EXPLODER ENEMY (caffeine overdose — explodes on death)
+  // ─────────────────────────────────────────────────────────────
+  EXPLODER_HP_MULT: 0.8,
+  EXPLODER_SPEED_MULT: 1.1,
+  EXPLODER_TICK_DAMAGE_MULT: 1.0,
+  EXPLODER_SIZE_MULT: 1.0,
+  EXPLODER_BLAST_RADIUS: 60,
+  EXPLODER_BLAST_DAMAGE: 30,     // Damage to blocks when exploding
+
+  // ─────────────────────────────────────────────────────────────
   // BOSS
   // ─────────────────────────────────────────────────────────────
   BOSS_SPEED_MULT: 0.6,
@@ -197,6 +240,20 @@ export const GAME_CONFIG = {
   BOSS_LATCH_SLOTS: 2,
   BOSS_ADD_SPAWN_INTERVAL: 0,
   BOSS_INCOMING_BANNER_DURATION: 1.5,
+
+  // Boss Phase System (4 phases based on HP thresholds)
+  BOSS_PHASE2_THRESHOLD: 0.75,     // Phase 2 starts at 75% HP
+  BOSS_PHASE3_THRESHOLD: 0.50,     // Phase 3 starts at 50% HP
+  BOSS_PHASE4_THRESHOLD: 0.25,     // Phase 4 (Enrage) at 25% HP
+  // Phase 2: extra enemy spawns
+  BOSS_PHASE2_SPAWN_INTERVAL: 1.5, // seconds between add spawns
+  BOSS_PHASE2_DAMAGE_MULT: 1.2,    // 20% more boss damage
+  // Phase 3: speed + damage increase
+  BOSS_PHASE3_SPAWN_INTERVAL: 1.2,
+  BOSS_PHASE3_DAMAGE_MULT: 1.5,    // 50% more boss damage
+  // Phase 4: Enrage - everything fast and dangerous
+  BOSS_PHASE4_SPAWN_INTERVAL: 0.8,
+  BOSS_PHASE4_DAMAGE_MULT: 2.0,    // 2x boss damage
   
   // ─────────────────────────────────────────────────────────────
   // WEAPON ABILITIES (Star + Foam + Minigun ability-only)
@@ -238,7 +295,51 @@ export const GAME_CONFIG = {
 
   // Brew per-box (Garage purchase)
   BREW_PER_BOX_COST: 350,
-  
+
+  // ─────────────────────────────────────────────────────────────
+  // ESPRESSO CANNON — rapid-fire espresso rain
+  // ─────────────────────────────────────────────────────────────
+  // Passive: rapid short-range burst of espresso shots
+  ESPRESSO_PASSIVE_RANGE: 200,
+  ESPRESSO_PASSIVE_FIRE_INTERVAL: 0.18,     // fast fire rate
+  ESPRESSO_PASSIVE_DAMAGE: 3,               // low per-shot damage (high DPS from fire rate)
+  ESPRESSO_PASSIVE_SPEED: 500,
+  ESPRESSO_PASSIVE_SPREAD_DEG: 15,          // random spread angle for spray pattern
+  ESPRESSO_PROJECTILE_RADIUS: 2,
+
+  // Active: Espresso Barrage (power skill — carpet bombardment)
+  ESPRESSO_BARRAGE_COST: 10,
+  ESPRESSO_BARRAGE_SHOTS: 20,               // total projectiles fired
+  ESPRESSO_BARRAGE_DAMAGE: 15,              // per-shot damage (high total)
+  ESPRESSO_BARRAGE_DURATION: 1.5,           // seconds
+  ESPRESSO_BARRAGE_SPREAD_DEG: 40,          // wide spread
+
+  // Espresso per-box (Garage purchase)
+  ESPRESSO_PER_BOX_COST: 750,
+
+  // ─────────────────────────────────────────────────────────────
+  // ICE BLENDER — AoE slow + damage
+  // ─────────────────────────────────────────────────────────────
+  // Passive: periodic ice drops that slow enemies
+  ICE_PASSIVE_RANGE: 160,
+  ICE_PASSIVE_FIRE_INTERVAL: 0.8,
+  ICE_PASSIVE_DAMAGE: 4,
+  ICE_PASSIVE_SPEED: 250,
+  ICE_PASSIVE_SLOW_FACTOR: 0.5,             // 50% speed while slowed
+  ICE_PASSIVE_SLOW_DURATION: 2.0,           // seconds of slow per hit
+  ICE_PROJECTILE_RADIUS: 5,
+
+  // Active: Ice Storm (power skill — wide area slow + damage)
+  ICE_STORM_COST: 6,
+  ICE_STORM_DAMAGE: 40,                     // damage to each enemy hit
+  ICE_STORM_GATE_DAMAGE: 25,                // damage to gate
+  ICE_STORM_SLOW_FACTOR: 0.3,               // severe slow (30% speed)
+  ICE_STORM_SLOW_DURATION: 4.0,             // long slow duration
+  ICE_STORM_RADIUS: 140,                    // large AoE radius
+
+  // Ice per-box (Garage purchase)
+  ICE_PER_BOX_COST: 1200,
+
   // ─────────────────────────────────────────────────────────────
   // MINIGUN (ability-only, Phase 1)
   // ─────────────────────────────────────────────────────────────
@@ -284,8 +385,8 @@ export const GAME_CONFIG = {
   STAGE2_WAVE_BREATHER: 0.8,
 } as const;
 
-// Per-stage travel duration (seconds)
-export const TRAVEL_DURATION_BY_STAGE = [10, 10, 16, 18, 20] as const;
+// Per-stage travel duration (seconds) - shortened to feel like TDS (was [10,10,16,18,20])
+export const TRAVEL_DURATION_BY_STAGE = [3, 4, 4, 5, 5] as const;
 
 // Mini-rush config (Stage 2+ travel only)
 export const MINI_RUSH_CONFIG = {

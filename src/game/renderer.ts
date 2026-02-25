@@ -1,5 +1,5 @@
 import { GAME_CONFIG, COLORS } from './config';
-import type { CartBlock, Enemy, Projectile, TipDrop, Particle, BossState, PlayPhase, GateBuilding } from './types';
+import type { CartBlock, Enemy, Projectile, TipDrop, Particle, FloatingDamage, BossState, PlayPhase, GateBuilding } from './types';
 
 // Module-level mutable state (reset via resetRendererState on new game)
 let parallaxOffset1 = 0;
@@ -37,6 +37,10 @@ export function drawGame(
   hasStar?: boolean,
   hasBrew?: boolean,
   brewBoxIndex?: number,
+  hasEspresso?: boolean,
+  espressoBoxIndex?: number,
+  hasIce?: boolean,
+  iceBoxIndex?: number,
 ) {
   const { CANVAS_WIDTH, CANVAS_HEIGHT } = GAME_CONFIG;
   const isTraveling = playPhase === 'TRAVEL' || playPhase === 'BREATHER';
@@ -71,7 +75,9 @@ export function drawGame(
   
   if (hasStar) drawStarSprite(ctx, blocks);
   if (hasBrew) drawFoamZone(ctx, blocks, brewBoxIndex, deltaTime || 0.016);
-  
+  if (hasEspresso) drawEspressoZone(ctx, blocks, espressoBoxIndex);
+  if (hasIce) drawIceZone(ctx, blocks, iceBoxIndex);
+
   enemies.forEach(enemy => drawEnemy(ctx, enemy));
   projectiles.forEach(proj => drawProjectile(ctx, proj));
   particles.forEach(particle => drawParticle(ctx, particle));
@@ -106,7 +112,7 @@ export function drawMenuScene(ctx: CanvasRenderingContext2D, blockCount: number)
   const blocks: CartBlock[] = Array.from({ length: blockCount }, (_, i) => ({
     id: i, hp: BLOCK_MAX_HP, maxHp: BLOCK_MAX_HP,
     y: groundY - 30 - (i + 1) * BLOCK_HEIGHT,
-    height: BLOCK_HEIGHT, destroyed: false,
+    height: BLOCK_HEIGHT, destroyed: false, collapseOffset: 0,
   }));
   drawCart(ctx, blocks);
   drawBarista(ctx, blocks);
@@ -238,13 +244,15 @@ function drawFoamZone(ctx: CanvasRenderingContext2D, blocks: CartBlock[], foamBo
     : null;
   // If the equipped box is destroyed, don't draw foam zone
   if (!foamBlock) return;
-  // Use visual Y position (matching drawCart rendering)
+  // Use visual Y position (index-based positioning matching drawCart rendering)
   const chassisHeight = Math.floor(GAME_CONFIG.BLOCK_HEIGHT * 0.4);
   const groundY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
   const chassisY = groundY - 30 - chassisHeight;
   const boxHeight = GAME_CONFIG.BLOCK_HEIGHT - 4;
-  const boxIndex = foamBlock.id - 1;
-  const visualBlockY = chassisY - (boxIndex + 1) * boxHeight;
+  // Find the foam block's visual cargo slot index (not block.id)
+  const activeCargoBlocks = activeBlocks.filter(b => b.id > 0).sort((a, b) => a.id - b.id);
+  const foamCargoIndex = activeCargoBlocks.findIndex(b => b.id === foamBlock.id);
+  const visualBlockY = chassisY - (foamCargoIndex + 1) * boxHeight + (foamBlock.collapseOffset || 0);
   const cannonOriginY = visualBlockY + boxHeight / 2;
   const range = GAME_CONFIG.BREW_PASSIVE_RANGE;
   
@@ -316,6 +324,112 @@ function drawFoamZone(ctx: CanvasRenderingContext2D, blocks: CartBlock[], foamBo
     ctx.fill();
     ctx.restore();
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ESPRESSO CANNON VISUAL (rapid-fire zone indicator — dark brown)
+// ═══════════════════════════════════════════════════════════════════════
+
+function drawEspressoZone(ctx: CanvasRenderingContext2D, blocks: CartBlock[], espressoBoxIndex?: number) {
+  const activeBlocks = blocks.filter(b => !b.destroyed);
+  if (activeBlocks.length === 0) return;
+
+  const cartFrontX = GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH;
+  const espBlock = espressoBoxIndex !== undefined && espressoBoxIndex >= 0
+    ? blocks.find(b => b.id === espressoBoxIndex + 1 && !b.destroyed)
+    : null;
+  if (!espBlock) return;
+
+  const chassisHeight = Math.floor(GAME_CONFIG.BLOCK_HEIGHT * 0.4);
+  const groundY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
+  const chassisY = groundY - 30 - chassisHeight;
+  const boxHeight = GAME_CONFIG.BLOCK_HEIGHT - 4;
+  const activeCargoBlocks = activeBlocks.filter(b => b.id > 0).sort((a, b) => a.id - b.id);
+  const espCargoIndex = activeCargoBlocks.findIndex(b => b.id === espBlock.id);
+  const visualBlockY = chassisY - (espCargoIndex + 1) * boxHeight + (espBlock.collapseOffset || 0);
+  const cannonOriginY = visualBlockY + boxHeight / 2;
+  const range = GAME_CONFIG.ESPRESSO_PASSIVE_RANGE;
+
+  // Draw cone-shaped fire zone
+  ctx.save();
+  ctx.globalAlpha = 0.15;
+  const spreadRad = (GAME_CONFIG.ESPRESSO_PASSIVE_SPREAD_DEG / 2) * (Math.PI / 180);
+  ctx.fillStyle = 'hsl(25, 70%, 40%)';
+  ctx.beginPath();
+  ctx.moveTo(cartFrontX, cannonOriginY);
+  ctx.arc(cartFrontX, cannonOriginY, range, -spreadRad, spreadRad);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  // Cannon nozzle
+  ctx.save();
+  ctx.fillStyle = 'hsl(25, 50%, 30%)';
+  ctx.fillRect(cartFrontX - 2, cannonOriginY - 4, 12, 8);
+  ctx.fillStyle = 'hsl(25, 60%, 45%)';
+  ctx.fillRect(cartFrontX + 8, cannonOriginY - 3, 4, 6);
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ICE BLENDER VISUAL (frost aura indicator — blue/cyan)
+// ═══════════════════════════════════════════════════════════════════════
+
+function drawIceZone(ctx: CanvasRenderingContext2D, blocks: CartBlock[], iceBoxIndex?: number) {
+  const activeBlocks = blocks.filter(b => !b.destroyed);
+  if (activeBlocks.length === 0) return;
+
+  const cartFrontX = GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH;
+  const iceBlock = iceBoxIndex !== undefined && iceBoxIndex >= 0
+    ? blocks.find(b => b.id === iceBoxIndex + 1 && !b.destroyed)
+    : null;
+  if (!iceBlock) return;
+
+  const chassisHeight = Math.floor(GAME_CONFIG.BLOCK_HEIGHT * 0.4);
+  const groundY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
+  const chassisY = groundY - 30 - chassisHeight;
+  const boxHeight = GAME_CONFIG.BLOCK_HEIGHT - 4;
+  const activeCargoBlocks = activeBlocks.filter(b => b.id > 0).sort((a, b) => a.id - b.id);
+  const iceCargoIndex = activeCargoBlocks.findIndex(b => b.id === iceBlock.id);
+  const visualBlockY = chassisY - (iceCargoIndex + 1) * boxHeight + (iceBlock.collapseOffset || 0);
+  const cannonOriginY = visualBlockY + boxHeight / 2;
+  const range = GAME_CONFIG.ICE_PASSIVE_RANGE;
+
+  // Draw frost aura circle
+  ctx.save();
+  ctx.globalAlpha = 0.12;
+  const gradient = ctx.createRadialGradient(cartFrontX, cannonOriginY, 0, cartFrontX, cannonOriginY, range);
+  gradient.addColorStop(0, 'hsla(195, 80%, 70%, 0.4)');
+  gradient.addColorStop(0.7, 'hsla(195, 80%, 80%, 0.2)');
+  gradient.addColorStop(1, 'hsla(195, 80%, 90%, 0)');
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.arc(cartFrontX, cannonOriginY, range, -Math.PI / 2, Math.PI / 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  // Range indicator arc
+  ctx.save();
+  ctx.globalAlpha = 0.25;
+  ctx.strokeStyle = 'hsl(195, 70%, 70%)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.arc(cartFrontX, cannonOriginY, range, -Math.PI / 2, Math.PI / 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+
+  // Blender device icon
+  ctx.save();
+  ctx.fillStyle = 'hsl(195, 60%, 50%)';
+  ctx.fillRect(cartFrontX - 2, cannonOriginY - 6, 10, 12);
+  ctx.fillStyle = 'hsl(195, 70%, 70%)';
+  ctx.beginPath();
+  ctx.arc(cartFrontX + 3, cannonOriginY, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -397,24 +511,27 @@ function drawCart(ctx: CanvasRenderingContext2D, blocks: CartBlock[], isTravelin
   const chassisY = groundY - 30 - chassisHeight;
   const boxHeight = BLOCK_HEIGHT - 4;
   
+  let cargoSlotIndex = 0;
   activeBlocks.forEach((block) => {
+    const offset = block.collapseOffset || 0;
     if (block.id === 0) {
+      const drawY = chassisY + offset;
       ctx.fillStyle = 'hsl(25, 30%, 18%)';
-      ctx.beginPath(); roundRect(ctx, CART_X - 3, chassisY, CART_WIDTH + 6, chassisHeight, 4); ctx.fill();
+      ctx.beginPath(); roundRect(ctx, CART_X - 3, drawY, CART_WIDTH + 6, chassisHeight, 4); ctx.fill();
       ctx.fillStyle = 'hsla(30, 20%, 40%, 0.4)';
-      ctx.fillRect(CART_X, chassisY + 2, CART_WIDTH, 4);
+      ctx.fillRect(CART_X, drawY + 2, CART_WIDTH, 4);
       const hpBarWidth = CART_WIDTH - 10, hpBarHeight = 4;
-      const hpBarX = CART_X + 5, hpBarY = chassisY + chassisHeight - 8;
+      const hpBarX = CART_X + 5, hpBarY = drawY + chassisHeight - 8;
       ctx.fillStyle = COLORS.hpBarBg;
       roundRect(ctx, hpBarX, hpBarY, hpBarWidth, hpBarHeight, 2); ctx.fill();
       const hpPercent = block.hp / block.maxHp;
       ctx.fillStyle = hpPercent > 0.3 ? COLORS.energyBar : COLORS.hpBar;
       roundRect(ctx, hpBarX, hpBarY, hpBarWidth * hpPercent, hpBarHeight, 2); ctx.fill();
     } else {
-      const boxIndex = block.id - 1;
-      const blockY = chassisY - (boxIndex + 1) * boxHeight;
+      // Index-based positioning: use cargoSlotIndex instead of block.id
+      const blockY = chassisY - (cargoSlotIndex + 1) * boxHeight + offset;
       const colors = [COLORS.darkRoast, COLORS.mediumRoast, COLORS.lightRoast];
-      ctx.fillStyle = colors[block.id] || COLORS.mediumRoast;
+      ctx.fillStyle = colors[cargoSlotIndex + 1] || COLORS.mediumRoast;
       ctx.beginPath(); roundRect(ctx, CART_X, blockY, CART_WIDTH, boxHeight, 8); ctx.fill();
       ctx.fillStyle = 'hsla(0, 0%, 100%, 0.2)';
       ctx.fillRect(CART_X + 5, blockY + 5, CART_WIDTH - 10, 8);
@@ -425,6 +542,7 @@ function drawCart(ctx: CanvasRenderingContext2D, blocks: CartBlock[], isTravelin
       const hpPercent = block.hp / block.maxHp;
       ctx.fillStyle = hpPercent > 0.3 ? COLORS.energyBar : COLORS.hpBar;
       roundRect(ctx, hpBarX, hpBarY, hpBarWidth * hpPercent, hpBarHeight, 3); ctx.fill();
+      cargoSlotIndex++;
     }
   });
 }
@@ -438,7 +556,10 @@ function drawBarista(ctx: CanvasRenderingContext2D, blocks: CartBlock[]) {
   const chassisY = groundY - 30 - chassisHeight;
   const boxHeight = BLOCK_HEIGHT - 4;
   const cargoBlockCount = activeBlocks.filter(b => b.id > 0).length;
-  const topY = chassisY - (cargoBlockCount * boxHeight);
+  // Use collapse offset from topmost block for smooth barista animation
+  const topBlock = activeBlocks[activeBlocks.length - 1];
+  const topBlockOffset = topBlock?.collapseOffset || 0;
+  const topY = chassisY - (cargoBlockCount * boxHeight) + topBlockOffset;
   const baristaX = CART_X + CART_WIDTH / 2;
   const baristaY = topY - 25;
   
@@ -466,32 +587,50 @@ function drawBarista(ctx: CanvasRenderingContext2D, blocks: CartBlock[]) {
 // ═══════════════════════════════════════════════════════════════════════
 function drawEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy) {
   if (!enemy.active || (enemy.state === 'SERVED' && enemy.servedTimer <= 0)) return;
-  
+
   const x = enemy.x;
   const y = enemy.y;
   const w = enemy.width;
   const h = enemy.height;
-  
+
   if (enemy.state === 'SERVED') {
     ctx.globalAlpha = enemy.servedTimer / GAME_CONFIG.SERVED_EXIT_DURATION;
   }
-  
+
   const isHeavy = enemy.kind === 'HEAVY';
   const isBoss = enemy.kind === 'BOSS';
-  
-  ctx.fillStyle = isBoss ? 'hsl(0, 60%, 35%)' : isHeavy ? 'hsl(280, 40%, 40%)' :
-    enemy.state === 'LATCHED' ? COLORS.awake : COLORS.sleepy;
+  const isSpeeder = enemy.kind === 'SPEEDER';
+  const isShielded = enemy.kind === 'SHIELDED';
+  const isExploder = enemy.kind === 'EXPLODER';
+
+  // Body color based on kind
+  ctx.fillStyle = isBoss ? 'hsl(0, 60%, 35%)'
+    : isHeavy ? 'hsl(280, 40%, 40%)'
+    : isSpeeder ? 'hsl(50, 70%, 55%)' // yellow-orange (morning rush)
+    : isShielded ? 'hsl(210, 30%, 50%)' // steel blue (armored)
+    : isExploder ? 'hsl(15, 80%, 45%)' // red-orange (volatile)
+    : enemy.state === 'LATCHED' ? COLORS.awake : COLORS.sleepy;
   ctx.beginPath();
   roundRect(ctx, x - w / 2, y - h, w, h, 8);
   ctx.fill();
-  
+
+  // Slow effect tint overlay
+  if (enemy.slowTimer > 0) {
+    ctx.fillStyle = 'hsla(200, 80%, 70%, 0.3)';
+    ctx.beginPath();
+    roundRect(ctx, x - w / 2, y - h, w, h, 8);
+    ctx.fill();
+  }
+
+  // Boss crown
   if (isBoss) {
     ctx.fillStyle = 'hsl(45, 90%, 55%)';
     ctx.font = 'bold 14px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('👑', x, y - h - 5);
   }
-  
+
+  // Heavy border glow (purple)
   if (isHeavy) {
     ctx.strokeStyle = 'hsla(280, 60%, 60%, 0.6)';
     ctx.lineWidth = 2;
@@ -499,33 +638,76 @@ function drawEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy) {
     roundRect(ctx, x - w / 2 - 2, y - h - 2, w + 4, h + 4, 10);
     ctx.stroke();
   }
-  
+
+  // Speeder: speed lines trailing behind
+  if (isSpeeder && enemy.state === 'WALKING') {
+    ctx.strokeStyle = 'hsla(50, 80%, 65%, 0.4)';
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 3; i++) {
+      const lineY = y - h * 0.3 - i * 8;
+      ctx.beginPath();
+      ctx.moveTo(x + w / 2 + 4, lineY);
+      ctx.lineTo(x + w / 2 + 14 + i * 4, lineY);
+      ctx.stroke();
+    }
+  }
+
+  // Shielded: armor plate overlay + shield HP bar
+  if (isShielded && enemy.shieldHp > 0) {
+    ctx.strokeStyle = 'hsla(210, 50%, 70%, 0.7)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    roundRect(ctx, x - w / 2 - 1, y - h - 1, w + 2, h + 2, 9);
+    ctx.stroke();
+    // Shield emblem
+    ctx.fillStyle = 'hsla(210, 60%, 75%, 0.8)';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🛡', x, y - h * 0.35);
+  }
+
+  // Exploder: pulsing glow + danger icon
+  if (isExploder) {
+    ctx.strokeStyle = 'hsla(15, 90%, 55%, 0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    roundRect(ctx, x - w / 2 - 2, y - h - 2, w + 4, h + 4, 10);
+    ctx.stroke();
+    ctx.fillStyle = 'hsla(45, 90%, 55%, 0.9)';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('💥', x, y - h - 4);
+  }
+
+  // HP bar
   const hpPercent = enemy.hp / enemy.maxHp;
   const barWidth = w - 4;
   const barHeight = 4;
   const barX = x - barWidth / 2;
-  const barY = y - h - 6;
+  const barY = y - h - (isExploder ? 14 : 6);
   ctx.fillStyle = COLORS.hpBarBg;
   roundRect(ctx, barX, barY, barWidth, barHeight, 2);
   ctx.fill();
   ctx.fillStyle = hpPercent > 0.5 ? COLORS.energyBar : COLORS.hpBar;
   roundRect(ctx, barX, barY, barWidth * hpPercent, barHeight, 2);
   ctx.fill();
-  
+
+  // Eyes
   ctx.fillStyle = COLORS.espresso;
   const eyeY = y - h * 0.6;
   ctx.beginPath();
   ctx.arc(x - 6, eyeY, 3, 0, Math.PI * 2);
   ctx.arc(x + 6, eyeY, 3, 0, Math.PI * 2);
   ctx.fill();
-  
+
+  // Latched exclamation
   if (enemy.state === 'LATCHED') {
     ctx.fillStyle = COLORS.warmOrange;
     ctx.font = 'bold 10px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('!', x, y - h * 0.3);
   }
-  
+
   ctx.globalAlpha = 1;
 }
 
@@ -547,6 +729,30 @@ function drawProjectile(ctx: CanvasRenderingContext2D, proj: Projectile) {
       else ctx.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
     }
     ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  } else if (proj.isIce) {
+    // Ice projectile: blue-white crystalline drop with frost glow
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    // Outer frost glow
+    ctx.fillStyle = 'hsla(195, 90%, 80%, 0.4)';
+    ctx.beginPath();
+    ctx.arc(proj.x, proj.y, proj.radius * 3.0, 0, Math.PI * 2);
+    ctx.fill();
+    // Main ice drop (diamond shape)
+    ctx.fillStyle = 'hsl(195, 85%, 70%)';
+    ctx.beginPath();
+    ctx.moveTo(proj.x, proj.y - proj.radius * 2);
+    ctx.lineTo(proj.x + proj.radius * 1.3, proj.y);
+    ctx.lineTo(proj.x, proj.y + proj.radius * 2);
+    ctx.lineTo(proj.x - proj.radius * 1.3, proj.y);
+    ctx.closePath();
+    ctx.fill();
+    // Inner highlight
+    ctx.fillStyle = 'hsl(195, 60%, 92%)';
+    ctx.beginPath();
+    ctx.arc(proj.x, proj.y - proj.radius * 0.3, proj.radius * 0.6, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   } else if (proj.isBrew) {
@@ -667,4 +873,48 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.lineTo(x, y + r);
   ctx.quadraticCurveTo(x, y, x + r, y);
   ctx.closePath();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// FLOATING DAMAGE NUMBERS (for big hits only: abilities, bombs, etc.)
+// ═══════════════════════════════════════════════════════════════════════
+export function drawFloatingDamageNumbers(
+  ctx: CanvasRenderingContext2D,
+  floatingDamages: FloatingDamage[],
+  screenShake: { x: number; y: number },
+) {
+  ctx.save();
+  ctx.translate(screenShake.x, screenShake.y);
+
+  floatingDamages.forEach(fd => {
+    if (!fd.active) return;
+    const lifeRatio = fd.life / fd.maxLife;
+    // Fade out in last 30% of life
+    const alpha = lifeRatio < 0.3 ? lifeRatio / 0.3 : 1.0;
+    // Scale up slightly at spawn, then shrink
+    const scale = lifeRatio > 0.8 ? 1.0 + (lifeRatio - 0.8) * 2.5 : 1.0;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(fd.x, fd.y);
+    ctx.scale(scale, scale);
+
+    // Text shadow for readability
+    ctx.font = `bold ${fd.fontSize}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Dark outline
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.lineWidth = 3;
+    ctx.strokeText(`${fd.value}`, 0, 0);
+
+    // Colored fill
+    ctx.fillStyle = fd.color;
+    ctx.fillText(`${fd.value}`, 0, 0);
+
+    ctx.restore();
+  });
+
+  ctx.restore();
 }

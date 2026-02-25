@@ -17,6 +17,12 @@ interface GameHUDProps {
   onBrewBurst: () => void;
   canUseBrew: boolean;
   hasBrew: boolean;
+  onEspressoBarrage: () => void;
+  canUseEspresso: boolean;
+  hasEspresso: boolean;
+  onIceStorm: () => void;
+  canUseIce: boolean;
+  hasIce: boolean;
   onPause: () => void;
   gameMode: GameMode;
   bossState: BossState;
@@ -28,8 +34,10 @@ interface GameHUDProps {
 
 export const GameHUD: React.FC<GameHUDProps> = ({
   timeSurvived, tips, power,
-  onTonicBomb, canUseBomb, onStarThrow, canUseStar, hasStar, 
+  onTonicBomb, canUseBomb, onStarThrow, canUseStar, hasStar,
   onBrewBurst, canUseBrew, hasBrew,
+  onEspressoBarrage, canUseEspresso, hasEspresso,
+  onIceStorm, canUseIce, hasIce,
   onPause,
   gameMode, bossState, bossIncomingTimer,
   playPhase, stageIndex = 1, gateBuilding,
@@ -57,6 +65,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   const canUseSkill = power >= skillCost;
   const starCost = GAME_CONFIG.STAR_THROW_COST;
   const brewCost = GAME_CONFIG.BREW_BURST_COST;
+  const espressoCost = GAME_CONFIG.ESPRESSO_BARRAGE_COST;
+  const iceCost = GAME_CONFIG.ICE_STORM_COST;
   
   return (
     <>
@@ -83,14 +93,35 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       {/* Boss HP Bar */}
       {bossState.isActive && (
         <div className="absolute top-14 left-3 right-3 z-20">
-          <div className="bg-coffee-dark/90 rounded-lg p-2 border border-red-500/50">
+          <div className={`bg-coffee-dark/90 rounded-lg p-2 border ${
+            bossState.phase === 4 ? 'border-red-400 animate-pulse' :
+            bossState.phase === 3 ? 'border-orange-400/70' :
+            bossState.phase === 2 ? 'border-yellow-500/60' :
+            'border-red-500/50'
+          }`}>
             <div className="flex items-center justify-between mb-1">
-              <span className="text-red-400 font-bold text-sm flex items-center gap-1">👑 BOSS</span>
-              <span className="text-red-300 text-xs font-mono">{bossState.hp}/{bossState.maxHp}</span>
+              <span className="text-red-400 font-bold text-sm flex items-center gap-1">
+                👑 BOSS
+                {bossState.phase >= 2 && (
+                  <span className={`text-[10px] ml-1 px-1 rounded ${
+                    bossState.phase === 4 ? 'bg-red-500 text-white' :
+                    bossState.phase === 3 ? 'bg-orange-500 text-white' :
+                    'bg-yellow-500 text-black'
+                  }`}>
+                    {bossState.phase === 4 ? 'ENRAGE' : bossState.phase === 3 ? 'FURY' : 'ANGRY'}
+                  </span>
+                )}
+              </span>
+              <span className="text-red-300 text-xs font-mono">{Math.max(0, Math.round(bossState.hp))}/{bossState.maxHp}</span>
             </div>
             <div className="h-3 bg-hp-bg rounded-full overflow-hidden">
-              <div className="h-full bg-red-500 transition-all duration-200 rounded-full"
-                style={{ width: `${(bossState.hp / bossState.maxHp) * 100}%` }} />
+              <div className={`h-full transition-all duration-200 rounded-full ${
+                bossState.phase === 4 ? 'bg-red-600' :
+                bossState.phase === 3 ? 'bg-orange-500' :
+                bossState.phase === 2 ? 'bg-yellow-500' :
+                'bg-red-500'
+              }`}
+                style={{ width: `${Math.max(0, (bossState.hp / bossState.maxHp) * 100)}%` }} />
             </div>
           </div>
         </div>
@@ -216,6 +247,34 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             </Button>
           )}
           
+          {/* Espresso Barrage Button */}
+          {hasEspresso && (
+            <Button onClick={onEspressoBarrage} disabled={!canUseEspresso}
+              className={`relative h-16 w-16 rounded-xl text-lg font-bold shadow-lg transition-all border-2 ${
+                canUseEspresso ? 'bg-amber-800 hover:bg-amber-700 text-coffee-foam border-amber-600/50 hover:scale-105 active:scale-95'
+                : 'bg-coffee-dark/60 text-coffee-cream/40 border-coffee-dark/30'}`}>
+              <span className="text-2xl">☕</span>
+              <div className={`absolute -top-1 -right-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                canUseEspresso ? 'bg-energy text-coffee-espresso' : 'bg-coffee-dark/60 text-coffee-cream/40'}`}>
+                {espressoCost}⚡
+              </div>
+            </Button>
+          )}
+
+          {/* Ice Storm Button */}
+          {hasIce && (
+            <Button onClick={onIceStorm} disabled={!canUseIce}
+              className={`relative h-16 w-16 rounded-xl text-lg font-bold shadow-lg transition-all border-2 ${
+                canUseIce ? 'bg-cyan-600 hover:bg-cyan-500 text-coffee-foam border-cyan-400/50 hover:scale-105 active:scale-95'
+                : 'bg-coffee-dark/60 text-coffee-cream/40 border-coffee-dark/30'}`}>
+              <span className="text-2xl">🧊</span>
+              <div className={`absolute -top-1 -right-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                canUseIce ? 'bg-energy text-coffee-espresso' : 'bg-coffee-dark/60 text-coffee-cream/40'}`}>
+                {iceCost}⚡
+              </div>
+            </Button>
+          )}
+
           {/* Bomb Button */}
           <Button onClick={onTonicBomb} disabled={!canUseSkill}
             className={`relative h-16 w-16 rounded-xl text-lg font-bold shadow-lg transition-all border-2 ${

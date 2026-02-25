@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { GAME_CONFIG, COLORS, STAGES, TRAVEL_DURATION_BY_STAGE, BOMB_SILENCE_BY_STAGE, MINI_RUSH_CONFIG, LATCH_DAMAGE_MULT_BY_STAGE } from './config';
-import { drawGame, drawMenuScene, resetRendererState } from './renderer';
+import { drawGame, drawMenuScene, drawFloatingDamageNumbers, resetRendererState } from './renderer';
 import { useGameLoop } from './useGameLoop';
 import { useObjectPool } from './useObjectPool';
 import { GarageOverlay } from './GarageOverlay';
@@ -20,17 +20,18 @@ import {
   clearPurchaseLog,
   consumeEnergy,
 } from './persistence';
-import type { 
-  GameState, 
+import type {
+  GameState,
   GameMode,
   PlayPhase,
   GateBuilding,
-  CartBlock, 
-  Enemy, 
+  CartBlock,
+  Enemy,
   EnemyKind,
-  Projectile, 
-  TipDrop, 
-  Particle, 
+  Projectile,
+  TipDrop,
+  Particle,
+  FloatingDamage,
   GameStats,
   BossState,
   RunTelemetry,
@@ -54,6 +55,10 @@ const createEnemy = (id: number): Enemy => ({
   latchedTimer: 0,
   queuePosition: 0,
   kind: 'NORMAL',
+  latchOrder: 0,
+  shieldHp: 0,
+  slowTimer: 0,
+  slowFactor: 1,
 });
 
 const createProjectile = (id: number): Projectile => ({
@@ -67,6 +72,7 @@ const createProjectile = (id: number): Projectile => ({
   pierce: false,
   isStar: false,
   isBrew: false,
+  isIce: false,
   hitGate: false,
 });
 
@@ -87,6 +93,16 @@ const createParticle = (id: number): Particle => ({
   color: COLORS.sparkle,
   size: 5,
   type: 'sparkle',
+  active: false,
+});
+
+const createFloatingDamage = (id: number): FloatingDamage => ({
+  id,
+  x: 0, y: 0,
+  value: 0,
+  life: 0, maxLife: 1.0,
+  color: '#ffffff',
+  fontSize: 16,
   active: false,
 });
 
@@ -121,10 +137,10 @@ export const CoffeeRushGame: React.FC = () => {
   
   // Boss state
   const [bossState, setBossState] = useState<BossState>({
-    isActive: false, hp: 0, maxHp: 0, spawnedAt: 0, addSpawnTimer: 0,
+    isActive: false, hp: 0, maxHp: 0, spawnedAt: 0, addSpawnTimer: 0, phase: 1, phaseTransitioned: [false, false, false],
   });
   const bossStateRef = useRef<BossState>({
-    isActive: false, hp: 0, maxHp: 0, spawnedAt: 0, addSpawnTimer: 0,
+    isActive: false, hp: 0, maxHp: 0, spawnedAt: 0, addSpawnTimer: 0, phase: 1, phaseTransitioned: [false, false, false],
   });
   const bossIncomingRef = useRef<number>(0);
   const bossEnemyRef = useRef<Enemy | null>(null);
@@ -197,6 +213,7 @@ export const CoffeeRushGame: React.FC = () => {
   // Game state refs
   const blocksRef = useRef<CartBlock[]>([]);
   const latchedCountRef = useRef(0);
+  const latchOrderCounterRef = useRef(0);  // Increments each time an enemy latches, for stack ordering
   const screenShakeRef = useRef({ x: 0, y: 0, duration: 0 });
   const lastAttackRef = useRef(-999);
   const lastSpawnRef = useRef(-999);
@@ -228,6 +245,17 @@ export const CoffeeRushGame: React.FC = () => {
   const foamPassiveTickRef = useRef(0);
   const foamSweepRef = useRef(0);
   const foamTelemetryRef = useRef({ passiveDamage: 0, passiveShotsToGate: 0, burstDamageEnemies: 0, burstDamageGate: 0, burstUses: 0, burstUsedDuringGate: 0, unlockedAt: -1, burstTimestamps: [] as number[] });
+
+  // Espresso Cannon weapon state
+  const hasEspressoRef = useRef(false);
+  const espressoBoxIndexRef = useRef(-1);
+  const espressoPassiveTickRef = useRef(0);
+  const espressoBarrageRef = useRef({ active: false, timer: 0, shotsFired: 0 });
+
+  // Ice Blender weapon state
+  const hasIceRef = useRef(false);
+  const iceBoxIndexRef = useRef(-1);
+  const icePassiveTickRef = useRef(0);
   
   // Telemetry
   const telemetryRef = useRef({
@@ -262,6 +290,7 @@ export const CoffeeRushGame: React.FC = () => {
   const projectilePool = useObjectPool(createProjectile, 80);
   const tipPool = useObjectPool(createTip, 30);
   const particlePool = useObjectPool(createParticle, GAME_CONFIG.MAX_PARTICLES);
+  const floatingDamagePool = useObjectPool(createFloatingDamage, 20);
   
   const initGame = useCallback(() => {
     const progression = loadProgression();
@@ -271,8 +300,10 @@ export const CoffeeRushGame: React.FC = () => {
     endReasonRef.current = null;
     coinsStartRef.current = progression.totalCoins;
     
-    // Calculate multipliers from pips
+    // Calculate multipliers from upgrade levels (continuous upgrade system)
+    // Damage: base multiplier + flat bonus per level (e.g. 12 + 1*level = 13, 14, 15...)
     const damageMultiplier = 1 + progression.damagePips * GAME_CONFIG.DAMAGE_BONUS_PER_PIP;
+    // Power regen: base + per-upgrade bonus (0.35 + 0.02*level)
     const powerRegenMult = 1 + progression.powerPips * GAME_CONFIG.POWER_REGEN_BONUS_PER_PIP;
     
     // Block count from blockCountLevel
@@ -294,6 +325,7 @@ export const CoffeeRushGame: React.FC = () => {
         y: groundY - 30 - (i + 1) * GAME_CONFIG.BLOCK_HEIGHT,
         height: GAME_CONFIG.BLOCK_HEIGHT,
         destroyed: false,
+        collapseOffset: 0,
       };
     });
     
@@ -307,9 +339,18 @@ export const CoffeeRushGame: React.FC = () => {
     // Check for brew weapon (purchased from Garage, per-box)
     hasFoamRef.current = progression.brewPerBox?.some(v => v) ?? false;
     foamBoxIndexRef.current = progression.brewPerBox?.findIndex(v => v) ?? -1;
+
+    // Check for espresso weapon
+    hasEspressoRef.current = progression.espressoPerBox?.some(v => v) ?? false;
+    espressoBoxIndexRef.current = progression.espressoPerBox?.findIndex(v => v) ?? -1;
+
+    // Check for ice weapon
+    hasIceRef.current = progression.icePerBox?.some(v => v) ?? false;
+    iceBoxIndexRef.current = progression.icePerBox?.findIndex(v => v) ?? -1;
     
     // Reset all refs
     latchedCountRef.current = 0;
+    latchOrderCounterRef.current = 0;
     screenShakeRef.current = { x: 0, y: 0, duration: 0 };
     lastAttackRef.current = -999;
     lastSpawnRef.current = -999;
@@ -319,6 +360,9 @@ export const CoffeeRushGame: React.FC = () => {
     foamPassiveTickRef.current = 0;
     foamSweepRef.current = 0;
     foamTelemetryRef.current = { passiveDamage: 0, passiveShotsToGate: 0, burstDamageEnemies: 0, burstDamageGate: 0, burstUses: 0, burstUsedDuringGate: 0, unlockedAt: -1, burstTimestamps: [] };
+    espressoPassiveTickRef.current = 0;
+    espressoBarrageRef.current = { active: false, timer: 0, shotsFired: 0 };
+    icePassiveTickRef.current = 0;
     powerRef.current = 0;
     timeRef.current = 0;
     tipsRef.current = 0;
@@ -355,6 +399,7 @@ export const CoffeeRushGame: React.FC = () => {
     projectilePool.clear();
     tipPool.clear();
     particlePool.clear();
+    floatingDamagePool.clear();
     
     // Reset state
     setPower(0);
@@ -362,7 +407,7 @@ export const CoffeeRushGame: React.FC = () => {
     setTimeSurvived(0);
     
     // Boss reset
-    bossStateRef.current = { isActive: false, hp: 0, maxHp: 0, spawnedAt: 0, addSpawnTimer: 0 };
+    bossStateRef.current = { isActive: false, hp: 0, maxHp: 0, spawnedAt: 0, addSpawnTimer: 0, phase: 1, phaseTransitioned: [false, false, false] };
     setBossState(bossStateRef.current);
     bossIncomingRef.current = 0;
     bossEnemyRef.current = null;
@@ -379,7 +424,7 @@ export const CoffeeRushGame: React.FC = () => {
     gateBuildingRef.current = null;
     setGateBuildingState(null);
     setEvoPopupData(null);
-  }, [enemyPool, projectilePool, tipPool, particlePool]);
+  }, [enemyPool, projectilePool, tipPool, particlePool, floatingDamagePool]);
   
   const handlePlay = useCallback((mode: GameMode) => {
     // Consume energy before starting (EndScreen and GarageOverlay both call this)
@@ -637,26 +682,53 @@ export const CoffeeRushGame: React.FC = () => {
   const spawnEnemy = useCallback(() => {
     const activeCount = enemyPool.getActive().length;
     if (activeCount >= GAME_CONFIG.MAX_ENEMIES) return;
-    
+
     const enemy = enemyPool.acquire();
     if (!enemy) return;
-    
+
     const stage = getStage(stageIndexRef.current);
     const groundY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
-    
-    // Heavy scheduling from stage config
+
+    // Determine enemy type based on spawn index and stage schedule
     spawnIndexRef.current++;
-    const isHeavy = stage.heavyEvery > 0 && (spawnIndexRef.current % stage.heavyEvery === 0);
-    
-    enemy.kind = isHeavy ? 'HEAVY' : 'NORMAL';
-    
-    if (isHeavy) telemetryRef.current.enemiesSpawned.heavy++;
-    else telemetryRef.current.enemiesSpawned.normal++;
-    
-    const hpMult = isHeavy ? GAME_CONFIG.HEAVY_HP_MULT : 1;
-    const speedMult = isHeavy ? GAME_CONFIG.HEAVY_SPEED_MULT : 1;
-    const sizeMult = isHeavy ? GAME_CONFIG.HEAVY_SIZE_MULT : 1;
-    
+    const idx = spawnIndexRef.current;
+
+    // Priority: Heavy > Shielded > Exploder > Speeder > Normal
+    // Only one special type per spawn — first match wins
+    let kind: EnemyKind = 'NORMAL';
+    if (stage.heavyEvery > 0 && idx % stage.heavyEvery === 0) {
+      kind = 'HEAVY';
+    } else if (stage.shieldedEvery > 0 && idx % stage.shieldedEvery === 0) {
+      kind = 'SHIELDED';
+    } else if (stage.exploderEvery > 0 && idx % stage.exploderEvery === 0) {
+      kind = 'EXPLODER';
+    } else if (stage.speederEvery > 0 && idx % stage.speederEvery === 0) {
+      kind = 'SPEEDER';
+    }
+
+    enemy.kind = kind;
+
+    // Telemetry
+    if (kind === 'HEAVY') telemetryRef.current.enemiesSpawned.heavy++;
+    else telemetryRef.current.enemiesSpawned.normal++; // all non-heavy counted as normal for now
+
+    // Per-kind multipliers
+    let hpMult = 1, speedMult = 1, sizeMult = 1;
+    switch (kind) {
+      case 'HEAVY':
+        hpMult = GAME_CONFIG.HEAVY_HP_MULT; speedMult = GAME_CONFIG.HEAVY_SPEED_MULT; sizeMult = GAME_CONFIG.HEAVY_SIZE_MULT;
+        break;
+      case 'SPEEDER':
+        hpMult = GAME_CONFIG.SPEEDER_HP_MULT; speedMult = GAME_CONFIG.SPEEDER_SPEED_MULT; sizeMult = GAME_CONFIG.SPEEDER_SIZE_MULT;
+        break;
+      case 'SHIELDED':
+        hpMult = GAME_CONFIG.SHIELDED_HP_MULT; speedMult = GAME_CONFIG.SHIELDED_SPEED_MULT; sizeMult = GAME_CONFIG.SHIELDED_SIZE_MULT;
+        break;
+      case 'EXPLODER':
+        hpMult = GAME_CONFIG.EXPLODER_HP_MULT; speedMult = GAME_CONFIG.EXPLODER_SPEED_MULT; sizeMult = GAME_CONFIG.EXPLODER_SIZE_MULT;
+        break;
+    }
+
     enemy.x = GAME_CONFIG.CANVAS_WIDTH + 30;
     enemy.y = groundY;
     enemy.maxHp = Math.floor(GAME_CONFIG.ENEMY_BASE_HP * stage.enemyHpMult * hpMult);
@@ -669,6 +741,13 @@ export const CoffeeRushGame: React.FC = () => {
     enemy.state = 'WALKING';
     enemy.latchedTimer = 0;
     enemy.queuePosition = 0;
+    enemy.latchOrder = 0;
+    enemy.slowTimer = 0;
+    enemy.slowFactor = 1;
+
+    // Shielded: extra armor HP
+    enemy.shieldHp = kind === 'SHIELDED'
+      ? Math.floor(enemy.maxHp * GAME_CONFIG.SHIELDED_ARMOR_HP_MULT) : 0;
   }, [enemyPool]);
   
   const fireProjectile = useCallback((targetEnemy: Enemy, pierce = false, isStar = false) => {
@@ -688,9 +767,10 @@ export const CoffeeRushGame: React.FC = () => {
     proj.pierce = pierce;
     proj.isStar = isStar;
     proj.isBrew = false;
+    proj.isIce = false;
     proj.hitGate = false;
   }, [projectilePool, isStressTest]);
-  
+
   // Fire projectile at raw coordinates (for shotgun/burst spread)
   const fireProjectileAt = useCallback((targetX: number, targetY: number, customDamage?: number, pierce = false, isStar = false) => {
     const proj = projectilePool.acquire();
@@ -710,6 +790,7 @@ export const CoffeeRushGame: React.FC = () => {
     proj.pierce = pierce;
     proj.isStar = isStar;
     proj.isBrew = false;
+    proj.isIce = false;
     proj.hitGate = false;
   }, [projectilePool, isStressTest]);
   
@@ -744,6 +825,21 @@ export const CoffeeRushGame: React.FC = () => {
     tip.opacity = 1;
     tip.value = value;
   }, [tipPool]);
+
+  // Spawn floating damage number (only for big hits: abilities, bomb, star throw, etc.)
+  const spawnFloatingDamage = useCallback((x: number, y: number, value: number, color?: string) => {
+    const fd = floatingDamagePool.acquire();
+    if (!fd) return;
+    fd.x = x + (Math.random() - 0.5) * 20; // Slight horizontal scatter
+    fd.y = y;
+    fd.value = Math.round(value);
+    fd.life = 1.0;
+    fd.maxLife = 1.0;
+    // Font size scales with damage value
+    fd.fontSize = value >= 200 ? 24 : value >= 100 ? 20 : value >= 50 ? 17 : 14;
+    // Color based on damage source
+    fd.color = color || '#ffffff';
+  }, [floatingDamagePool]);
   
   // ═══════════════════════════════════════════════════════════════════════
   // TONIC BOMB (damages enemies + gate)
@@ -764,17 +860,28 @@ export const CoffeeRushGame: React.FC = () => {
     spawnParticles(bombX, bombY, 'steam', 10);
     
     // Damage enemies
+    let totalBombDmg = 0;
     enemyPool.getActive().forEach(enemy => {
       if (enemy.state === 'SERVED' || enemy.isServed) return;
       const dx = enemy.x - bombX;
       const dy = (enemy.y - enemy.height / 2) - bombY;
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist < GAME_CONFIG.TONIC_BOMB_RADIUS) {
-        enemy.hp -= GAME_CONFIG.TONIC_BOMB_DAMAGE;
+        let dmg = GAME_CONFIG.TONIC_BOMB_DAMAGE;
+        if (enemy.shieldHp > 0) {
+          const absorbed = Math.min(enemy.shieldHp, dmg);
+          enemy.shieldHp -= absorbed; dmg -= absorbed;
+        }
+        enemy.hp -= dmg;
+        totalBombDmg += GAME_CONFIG.TONIC_BOMB_DAMAGE;
         spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'sparkle', 3);
       }
     });
-    
+    // Show total bomb damage as floating number
+    if (totalBombDmg > 0) {
+      spawnFloatingDamage(bombX, bombY - 30, totalBombDmg, 'hsl(25, 80%, 55%)');
+    }
+
     // Damage gate building (bomb always damages gate)
     const gate = gateBuildingRef.current;
     if (gate && !gate.isDestroyed) {
@@ -789,6 +896,7 @@ export const CoffeeRushGame: React.FC = () => {
           bombGateDamageByGateRef.current[si] += GAME_CONFIG.TONIC_BOMB_DAMAGE;
         }
         spawnParticles(gate.x + gate.width / 2, gate.y, 'sparkle', 5);
+        spawnFloatingDamage(gate.x + gate.width / 2, gate.y - 10, GAME_CONFIG.TONIC_BOMB_DAMAGE, 'hsl(45, 90%, 55%)');
       }
     }
     
@@ -803,8 +911,8 @@ export const CoffeeRushGame: React.FC = () => {
         stage1WaveRef.current.breatherTimer = 0;
       }
     }
-  }, [enemyPool, spawnParticles]);
-  
+  }, [enemyPool, spawnParticles, spawnFloatingDamage]);
+
   // ═══════════════════════════════════════════════════════════════════════
   // STAR THROW (piercing power skill)
   // ═══════════════════════════════════════════════════════════════════════
@@ -869,13 +977,24 @@ export const CoffeeRushGame: React.FC = () => {
     }
     
     // Damage ALL enemies on screen
+    let totalBurstDmg = 0;
     enemyPool.getActive().forEach(enemy => {
       if (enemy.state === 'SERVED' || enemy.isServed) return;
-      enemy.hp -= GAME_CONFIG.BREW_BURST_DAMAGE;
+      let dmg = GAME_CONFIG.BREW_BURST_DAMAGE;
+      if (enemy.shieldHp > 0) {
+        const absorbed = Math.min(enemy.shieldHp, dmg);
+        enemy.shieldHp -= absorbed; dmg -= absorbed;
+      }
+      enemy.hp -= dmg;
+      totalBurstDmg += GAME_CONFIG.BREW_BURST_DAMAGE;
       foamTelemetryRef.current.burstDamageEnemies += GAME_CONFIG.BREW_BURST_DAMAGE;
       spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'sparkle', 2);
     });
-    
+    // Show total burst damage as floating number
+    if (totalBurstDmg > 0) {
+      spawnFloatingDamage(GAME_CONFIG.CANVAS_WIDTH / 2, groundY - 80, totalBurstDmg, 'hsl(200, 70%, 75%)');
+    }
+
     // Damage gate (flat damage)
     const gate = gateBuildingRef.current;
     if (gate && !gate.isDestroyed) {
@@ -886,9 +1005,92 @@ export const CoffeeRushGame: React.FC = () => {
         gateDamageDealtRef.current[si] += GAME_CONFIG.BREW_BURST_GATE_DAMAGE;
       }
       spawnParticles(gate.x + gate.width / 2, gate.y, 'sparkle', 4);
+      spawnFloatingDamage(gate.x + gate.width / 2, gate.y - 10, GAME_CONFIG.BREW_BURST_GATE_DAMAGE, 'hsl(200, 70%, 75%)');
     }
-  }, [enemyPool, spawnParticles]);
-  
+  }, [enemyPool, spawnParticles, spawnFloatingDamage]);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ESPRESSO BARRAGE (rapid-fire carpet bombardment — power skill)
+  // ═══════════════════════════════════════════════════════════════════════
+  const handleEspressoBarrage = useCallback(() => {
+    if (!hasEspressoRef.current) return;
+    const espBlock = blocksRef.current.find(b => b.id === espressoBoxIndexRef.current + 1);
+    if (!espBlock || espBlock.destroyed) { hasEspressoRef.current = false; return; }
+    if (powerRef.current < GAME_CONFIG.ESPRESSO_BARRAGE_COST) return;
+
+    powerRef.current -= GAME_CONFIG.ESPRESSO_BARRAGE_COST;
+    setPower(powerRef.current);
+    screenShakeRef.current = { x: 0, y: 0, duration: 0.2 };
+
+    // Activate barrage mode (fires shots over ESPRESSO_BARRAGE_DURATION in game loop)
+    espressoBarrageRef.current = {
+      active: true,
+      timer: GAME_CONFIG.ESPRESSO_BARRAGE_DURATION,
+      shotsFired: 0,
+    };
+  }, []);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ICE STORM (AoE slow + damage — power skill)
+  // ═══════════════════════════════════════════════════════════════════════
+  const handleIceStorm = useCallback(() => {
+    if (!hasIceRef.current) return;
+    const iceBlock = blocksRef.current.find(b => b.id === iceBoxIndexRef.current + 1);
+    if (!iceBlock || iceBlock.destroyed) { hasIceRef.current = false; return; }
+    if (powerRef.current < GAME_CONFIG.ICE_STORM_COST) return;
+
+    powerRef.current -= GAME_CONFIG.ICE_STORM_COST;
+    setPower(powerRef.current);
+    screenShakeRef.current = { x: 0, y: 0, duration: 0.3 };
+
+    const stormX = GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH + 80;
+    const groundY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
+    const stormY = groundY - 60;
+
+    // Spawn ice particles
+    spawnParticles(stormX, stormY, 'steam', 15);
+
+    // Damage + slow ALL enemies in radius
+    let totalDmg = 0;
+    enemyPool.getActive().forEach(enemy => {
+      if (enemy.state === 'SERVED' || enemy.isServed) return;
+      const dx = enemy.x - stormX;
+      const dy = (enemy.y - enemy.height / 2) - stormY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < GAME_CONFIG.ICE_STORM_RADIUS) {
+        let dmg = GAME_CONFIG.ICE_STORM_DAMAGE;
+        if (enemy.shieldHp > 0) {
+          const absorbed = Math.min(enemy.shieldHp, dmg);
+          enemy.shieldHp -= absorbed; dmg -= absorbed;
+        }
+        enemy.hp -= dmg;
+        totalDmg += GAME_CONFIG.ICE_STORM_DAMAGE;
+        // Apply slow
+        enemy.slowTimer = GAME_CONFIG.ICE_STORM_SLOW_DURATION;
+        enemy.slowFactor = GAME_CONFIG.ICE_STORM_SLOW_FACTOR;
+        spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'sparkle', 2);
+      }
+    });
+    if (totalDmg > 0) {
+      spawnFloatingDamage(stormX, stormY - 30, totalDmg, 'hsl(200, 80%, 70%)');
+    }
+
+    // Damage gate
+    const gate = gateBuildingRef.current;
+    if (gate && !gate.isDestroyed) {
+      const gdx = gate.x + gate.width / 2 - stormX;
+      const gdy = gate.y + gate.height / 2 - stormY;
+      const gDist = Math.sqrt(gdx * gdx + gdy * gdy);
+      if (gDist < GAME_CONFIG.ICE_STORM_RADIUS + gate.width) {
+        gate.hp -= GAME_CONFIG.ICE_STORM_GATE_DAMAGE;
+        const si = stageIndexRef.current - 1;
+        if (si >= 0 && si < 5) gateDamageDealtRef.current[si] += GAME_CONFIG.ICE_STORM_GATE_DAMAGE;
+        spawnParticles(gate.x + gate.width / 2, gate.y, 'sparkle', 4);
+        spawnFloatingDamage(gate.x + gate.width / 2, gate.y - 10, GAME_CONFIG.ICE_STORM_GATE_DAMAGE, 'hsl(200, 80%, 70%)');
+      }
+    }
+  }, [enemyPool, spawnParticles, spawnFloatingDamage]);
+
   // ═══════════════════════════════════════════════════════════════════════
   // EVO CHOICE HANDLER
   // ═══════════════════════════════════════════════════════════════════════
@@ -979,10 +1181,12 @@ export const CoffeeRushGame: React.FC = () => {
       drawGame(ctx, blocks, enemyPool.getActive(), projectilePool.getActive(),
         tipPool.getActive(), particlePool.getActive(), screenShakeRef.current,
         bossStateRef.current, bossIncomingRef.current, playPhaseRef.current,
-      deltaTime, gateBuildingRef.current, currentTime, hasStarRef.current, hasFoamRef.current, foamBoxIndexRef.current);
+        deltaTime, gateBuildingRef.current, currentTime, hasStarRef.current, hasFoamRef.current, foamBoxIndexRef.current,
+        hasEspressoRef.current, espressoBoxIndexRef.current, hasIceRef.current, iceBoxIndexRef.current);
+      drawFloatingDamageNumbers(ctx, floatingDamagePool.getActive(), screenShakeRef.current);
       return;
     }
-    
+
     // ── Time + HUD Throttle ──
     timeRef.current += deltaTime;
     hudAccumulatorRef.current += deltaTime;
@@ -1152,10 +1356,12 @@ export const CoffeeRushGame: React.FC = () => {
       
       // Render and skip rest of sim
       ctx.clearRect(0, 0, GAME_CONFIG.CANVAS_WIDTH, GAME_CONFIG.CANVAS_HEIGHT);
-        drawGame(ctx, blocks, enemyPool.getActive(), projectilePool.getActive(),
+      drawGame(ctx, blocks, enemyPool.getActive(), projectilePool.getActive(),
         tipPool.getActive(), particlePool.getActive(), screenShakeRef.current,
         bossStateRef.current, bossIncomingRef.current, playPhaseRef.current,
-        deltaTime, gateBuildingRef.current, currentTime, hasStarRef.current, hasFoamRef.current, foamBoxIndexRef.current);
+        deltaTime, gateBuildingRef.current, currentTime, hasStarRef.current, hasFoamRef.current, foamBoxIndexRef.current,
+        hasEspressoRef.current, espressoBoxIndexRef.current, hasIceRef.current, iceBoxIndexRef.current);
+      drawFloatingDamageNumbers(ctx, floatingDamagePool.getActive(), screenShakeRef.current);
       return;
     }
     
@@ -1218,10 +1424,12 @@ export const CoffeeRushGame: React.FC = () => {
             bossEnemy.servedTimer = 0;
             bossEnemy.state = 'WALKING';
             bossEnemy.latchedTimer = 0;
+            bossEnemy.latchOrder = 0;
             bossEnemyRef.current = bossEnemy;
             bossStateRef.current = {
               isActive: true, hp: bossHP, maxHp: bossHP,
               spawnedAt: currentTime, addSpawnTimer: 0,
+              phase: 1, phaseTransitioned: [false, false, false],
             };
             telemetryRef.current.enemiesSpawned.boss++;
           }
@@ -1229,15 +1437,56 @@ export const CoffeeRushGame: React.FC = () => {
       } else if (!bossStateRef.current.isActive && bossEnemyRef.current === null && bossIncomingRef.current === 0) {
         bossIncomingRef.current = GAME_CONFIG.BOSS_INCOMING_BANNER_DURATION;
       }
-      
-      // Update boss state
+
+      // Update boss state + phase transitions
       if (bossStateRef.current.isActive && bossEnemyRef.current) {
-        bossStateRef.current.hp = bossEnemyRef.current.hp;
-        if (bossEnemyRef.current.hp <= 0 || bossEnemyRef.current.isServed) {
+        const boss = bossEnemyRef.current;
+        bossStateRef.current.hp = boss.hp;
+
+        if (boss.hp <= 0 || boss.isServed) {
           bossStateRef.current.isActive = false;
           bossEnemyRef.current = null;
           handleChapterClear();
           return;
+        }
+
+        // Boss Phase System: check HP thresholds for phase transitions
+        const hpPercent = boss.hp / boss.maxHp;
+        const bs = bossStateRef.current;
+
+        // Phase 4: Enrage (25% HP)
+        if (hpPercent <= GAME_CONFIG.BOSS_PHASE4_THRESHOLD && !bs.phaseTransitioned[2]) {
+          bs.phase = 4;
+          bs.phaseTransitioned[2] = true;
+          screenShakeRef.current = { x: 0, y: 0, duration: 0.5 };
+          spawnParticles(boss.x, boss.y - boss.height / 2, 'confetti', 15);
+        }
+        // Phase 3: Speed + Damage (50% HP)
+        else if (hpPercent <= GAME_CONFIG.BOSS_PHASE3_THRESHOLD && !bs.phaseTransitioned[1]) {
+          bs.phase = 3;
+          bs.phaseTransitioned[1] = true;
+          screenShakeRef.current = { x: 0, y: 0, duration: 0.4 };
+          spawnParticles(boss.x, boss.y - boss.height / 2, 'steam', 10);
+        }
+        // Phase 2: Extra spawns (75% HP)
+        else if (hpPercent <= GAME_CONFIG.BOSS_PHASE2_THRESHOLD && !bs.phaseTransitioned[0]) {
+          bs.phase = 2;
+          bs.phaseTransitioned[0] = true;
+          screenShakeRef.current = { x: 0, y: 0, duration: 0.3 };
+          spawnParticles(boss.x, boss.y - boss.height / 2, 'steam', 8);
+        }
+
+        // Phase-based add spawning (phases 2-4 spawn extra enemies)
+        if (bs.phase >= 2) {
+          const spawnInterval = bs.phase === 4 ? GAME_CONFIG.BOSS_PHASE4_SPAWN_INTERVAL
+            : bs.phase === 3 ? GAME_CONFIG.BOSS_PHASE3_SPAWN_INTERVAL
+            : GAME_CONFIG.BOSS_PHASE2_SPAWN_INTERVAL;
+
+          bs.addSpawnTimer += deltaTime;
+          if (bs.addSpawnTimer >= spawnInterval) {
+            bs.addSpawnTimer -= spawnInterval;
+            spawnEnemy(); // Spawn an add
+          }
         }
       }
     }
@@ -1511,7 +1760,11 @@ export const CoffeeRushGame: React.FC = () => {
           const dy = ey - sawCenterY;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist < GAME_CONFIG.STAR_PASSIVE_RADIUS) {
-            const starDmg = Math.floor(GAME_CONFIG.STAR_PASSIVE_TICK_DAMAGE * starDamageMultRef.current);
+            let starDmg = Math.floor(GAME_CONFIG.STAR_PASSIVE_TICK_DAMAGE * starDamageMultRef.current);
+            if (enemy.shieldHp > 0) {
+              const absorbed = Math.min(enemy.shieldHp, starDmg);
+              enemy.shieldHp -= absorbed; starDmg -= absorbed;
+            }
             enemy.hp -= starDmg;
             starTelemetryRef.current.passiveDamage += starDmg;
             spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'sparkle', 1);
@@ -1549,8 +1802,10 @@ export const CoffeeRushGame: React.FC = () => {
           const chassisHeight = Math.floor(GAME_CONFIG.BLOCK_HEIGHT * 0.4);
           const chassisY = groundY - 30 - chassisHeight;
           const boxHeight = GAME_CONFIG.BLOCK_HEIGHT - 4;
-          const boxIndex = foamBlock.id - 1;
-          const visualBlockY = chassisY - (boxIndex + 1) * boxHeight;
+          // Use index-based positioning (matching renderer drawCart)
+          const activeCargoBlocks = blocksRef.current.filter(b => !b.destroyed && b.id > 0).sort((a, b2) => a.id - b2.id);
+          const foamCargoIdx = activeCargoBlocks.findIndex(b => b.id === foamBlock.id);
+          const visualBlockY = chassisY - (foamCargoIdx + 1) * boxHeight + (foamBlock.collapseOffset || 0);
           originY = visualBlockY + boxHeight / 2;
         } else {
           originY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET - 50;
@@ -1603,10 +1858,139 @@ export const CoffeeRushGame: React.FC = () => {
           proj.pierce = false;
           proj.isStar = false;
           proj.isBrew = true;
+          proj.isIce = false;
         }
       }
     }
     
+    // ═══════════════════════════════════════════════════════════════════
+    // PASSIVE ESPRESSO CANNON (rapid-fire spray)
+    // ═══════════════════════════════════════════════════════════════════
+    if (hasEspressoRef.current) {
+      const espBlock = blocksRef.current.find(b => b.id === espressoBoxIndexRef.current + 1);
+      if (!espBlock || espBlock.destroyed) { hasEspressoRef.current = false; }
+    }
+    if (hasEspressoRef.current) {
+      espressoPassiveTickRef.current -= deltaTime;
+      if (espressoPassiveTickRef.current <= 0) {
+        espressoPassiveTickRef.current = GAME_CONFIG.ESPRESSO_PASSIVE_FIRE_INTERVAL;
+        const cartFrontX = GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH;
+        const espBlock = blocksRef.current.find(b => b.id === espressoBoxIndexRef.current + 1 && !b.destroyed);
+        if (espBlock) {
+          const groundY2 = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
+          const chassisH = Math.floor(GAME_CONFIG.BLOCK_HEIGHT * 0.4);
+          const chassisY2 = groundY2 - 30 - chassisH;
+          const boxH = GAME_CONFIG.BLOCK_HEIGHT - 4;
+          const activeCargoB = blocksRef.current.filter(b => !b.destroyed && b.id > 0).sort((a, b2) => a.id - b2.id);
+          const espIdx = activeCargoB.findIndex(b => b.id === espBlock.id);
+          const visY = chassisY2 - (espIdx + 1) * boxH + (espBlock.collapseOffset || 0);
+          const originY = visY + boxH / 2;
+          // Pick random direction with spread
+          const spreadRad = (GAME_CONFIG.ESPRESSO_PASSIVE_SPREAD_DEG / 2) * (Math.PI / 180);
+          const angle = (Math.random() - 0.5) * spreadRad * 2;
+          const range = GAME_CONFIG.ESPRESSO_PASSIVE_RANGE;
+          // Target: nearest enemy or random direction
+          let tX = cartFrontX + Math.cos(angle) * range;
+          let tY = originY + Math.sin(angle) * range;
+          if (enemies.length > 0) {
+            const inRange = enemies.filter(e => e.x - cartFrontX < range && e.x > cartFrontX);
+            if (inRange.length > 0) {
+              const t = inRange[Math.floor(Math.random() * inRange.length)];
+              tX = t.x + (Math.random() - 0.5) * 20;
+              tY = t.y - t.height / 2 + (Math.random() - 0.5) * 15;
+            }
+          }
+          const proj = projectilePool.acquire();
+          if (proj) {
+            proj.x = cartFrontX; proj.y = originY;
+            proj.targetX = tX; proj.targetY = tY;
+            proj.speed = GAME_CONFIG.ESPRESSO_PASSIVE_SPEED;
+            proj.damage = GAME_CONFIG.ESPRESSO_PASSIVE_DAMAGE;
+            proj.radius = GAME_CONFIG.ESPRESSO_PROJECTILE_RADIUS;
+            proj.pierce = false; proj.isStar = false; proj.isBrew = false; proj.isIce = false; proj.hitGate = false;
+          }
+        }
+      }
+    }
+
+    // Espresso Barrage update (active ability — rapid fire over duration)
+    if (espressoBarrageRef.current.active) {
+      const barrage = espressoBarrageRef.current;
+      barrage.timer -= deltaTime;
+      const shotsPerSec = GAME_CONFIG.ESPRESSO_BARRAGE_SHOTS / GAME_CONFIG.ESPRESSO_BARRAGE_DURATION;
+      const shouldFire = Math.floor(shotsPerSec * (GAME_CONFIG.ESPRESSO_BARRAGE_DURATION - barrage.timer)) > barrage.shotsFired;
+      if (shouldFire && barrage.shotsFired < GAME_CONFIG.ESPRESSO_BARRAGE_SHOTS) {
+        const cartFrontX = GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH;
+        const groundYb = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
+        const spreadRad = (GAME_CONFIG.ESPRESSO_BARRAGE_SPREAD_DEG / 2) * (Math.PI / 180);
+        const angle = (Math.random() - 0.5) * spreadRad * 2;
+        const range = 300;
+        let tX = cartFrontX + Math.cos(angle) * range;
+        let tY = groundYb - 60 + Math.sin(angle) * range;
+        // Prefer enemies/gate
+        if (enemies.length > 0) {
+          const t = enemies[Math.floor(Math.random() * enemies.length)];
+          tX = t.x + (Math.random() - 0.5) * 30; tY = t.y - t.height / 2 + (Math.random() - 0.5) * 20;
+        } else if (gateBuildingRef.current && !gateBuildingRef.current.isDestroyed) {
+          const g = gateBuildingRef.current;
+          tX = g.x + g.width / 2 + (Math.random() - 0.5) * 20;
+          tY = g.y + g.height / 2 + (Math.random() - 0.5) * 30;
+        }
+        const proj = projectilePool.acquire();
+        if (proj) {
+          proj.x = cartFrontX; proj.y = groundYb - 80;
+          proj.targetX = tX; proj.targetY = tY;
+          proj.speed = GAME_CONFIG.ESPRESSO_PASSIVE_SPEED * 1.3;
+          proj.damage = GAME_CONFIG.ESPRESSO_BARRAGE_DAMAGE;
+          proj.radius = GAME_CONFIG.ESPRESSO_PROJECTILE_RADIUS + 1;
+          proj.pierce = false; proj.isStar = false; proj.isBrew = false; proj.isIce = false; proj.hitGate = false;
+        }
+        barrage.shotsFired++;
+      }
+      if (barrage.timer <= 0) {
+        barrage.active = false;
+        const totalDmg = barrage.shotsFired * GAME_CONFIG.ESPRESSO_BARRAGE_DAMAGE;
+        if (totalDmg > 0) {
+          spawnFloatingDamage(GAME_CONFIG.CANVAS_WIDTH / 2, GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET - 100, totalDmg, 'hsl(25, 70%, 45%)');
+        }
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // PASSIVE ICE BLENDER (periodic ice drops that slow)
+    // ═══════════════════════════════════════════════════════════════════
+    if (hasIceRef.current) {
+      const iceBlock = blocksRef.current.find(b => b.id === iceBoxIndexRef.current + 1);
+      if (!iceBlock || iceBlock.destroyed) { hasIceRef.current = false; }
+    }
+    if (hasIceRef.current) {
+      icePassiveTickRef.current -= deltaTime;
+      if (icePassiveTickRef.current <= 0) {
+        icePassiveTickRef.current = GAME_CONFIG.ICE_PASSIVE_FIRE_INTERVAL;
+        const cartFrontX = GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH;
+        // Find nearest enemy in range to target with ice drop
+        const inRange = enemies.filter(e => {
+          const dx = e.x - cartFrontX;
+          return dx > 0 && dx < GAME_CONFIG.ICE_PASSIVE_RANGE;
+        });
+        if (inRange.length > 0) {
+          const target = inRange[Math.floor(Math.random() * inRange.length)];
+          const proj = projectilePool.acquire();
+          if (proj) {
+            const iceBlock = blocksRef.current.find(b => b.id === iceBoxIndexRef.current + 1 && !b.destroyed);
+            const groundY3 = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
+            const originY = iceBlock ? iceBlock.y + GAME_CONFIG.BLOCK_HEIGHT / 2 : groundY3 - 60;
+            proj.x = cartFrontX; proj.y = originY;
+            proj.targetX = target.x; proj.targetY = target.y - target.height / 2;
+            proj.speed = GAME_CONFIG.ICE_PASSIVE_SPEED;
+            proj.damage = GAME_CONFIG.ICE_PASSIVE_DAMAGE;
+            proj.radius = GAME_CONFIG.ICE_PROJECTILE_RADIUS;
+            proj.pierce = false; proj.isStar = false; proj.isBrew = false; proj.isIce = true; proj.hitGate = false;
+          }
+        }
+      }
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // UPDATE PROJECTILES (with LoS + gate collision)
     // ═══════════════════════════════════════════════════════════════════
@@ -1632,12 +2016,31 @@ export const CoffeeRushGame: React.FC = () => {
         const hitDist = Math.sqrt((proj.x - ex) ** 2 + (proj.y - ey) ** 2);
         
         if (hitDist < enemy.width / 2 + proj.radius + 5) {
-          enemy.hp -= proj.damage;
+          // Shield absorption: damage shield first, overflow to HP
+          let dmg = proj.damage;
+          if (enemy.shieldHp > 0) {
+            const absorbed = Math.min(enemy.shieldHp, dmg);
+            enemy.shieldHp -= absorbed;
+            dmg -= absorbed;
+            if (enemy.shieldHp <= 0) {
+              spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'steam', 5);
+            }
+          }
+          enemy.hp -= dmg;
+          // Ice projectile: apply slow debuff on hit
+          if (proj.isIce && enemy.hp > 0) {
+            enemy.slowTimer = GAME_CONFIG.ICE_PASSIVE_SLOW_DURATION;
+            enemy.slowFactor = GAME_CONFIG.ICE_PASSIVE_SLOW_FACTOR;
+          }
           shotsHitRef.current++;
           shotsToEnemiesRef.current++;
-          if (proj.isStar) starTelemetryRef.current.throwDamageEnemies += proj.damage;
+          if (proj.isStar) {
+            starTelemetryRef.current.throwDamageEnemies += proj.damage;
+            // Floating damage for Star Throw hits (big ability damage)
+            spawnFloatingDamage(enemy.x, enemy.y - enemy.height, proj.damage, 'hsl(45, 90%, 55%)');
+          }
           if (proj.isBrew) foamTelemetryRef.current.passiveDamage += proj.damage;
-          spawnParticles(proj.x, proj.y, 'sparkle', 3);
+          spawnParticles(proj.x, proj.y, enemy.shieldHp > 0 ? 'steam' : 'sparkle', 3);
           hitEnemy = true;
           if (!proj.pierce) {
             projectilePool.release(proj);
@@ -1662,7 +2065,11 @@ export const CoffeeRushGame: React.FC = () => {
             if (proj.pierce) proj.hitGate = true;
             const si = stageIndexRef.current - 1;
             if (si >= 0 && si < 5) gateDamageDealtRef.current[si] += proj.damage;
-            if (proj.isStar) starTelemetryRef.current.throwDamageGate += proj.damage;
+            if (proj.isStar) {
+              starTelemetryRef.current.throwDamageGate += proj.damage;
+              // Floating damage for Star Throw gate hits
+              spawnFloatingDamage(g.x + g.width / 2, g.y, proj.damage, 'hsl(45, 90%, 55%)');
+            }
             if (proj.isBrew) foamTelemetryRef.current.passiveShotsToGate++;
             shotsToGateRef.current++;
             spawnParticles(isStarPierce ? g.x : proj.x, isStarPierce ? g.y + g.height / 2 : proj.y, 'sparkle', 3);
@@ -1681,21 +2088,48 @@ export const CoffeeRushGame: React.FC = () => {
     });
     
     // ═══════════════════════════════════════════════════════════════════
-    // UPDATE ENEMIES
+    // BLOCK COLLAPSE ANIMATION
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      const collapseSpeed = (GAME_CONFIG.BLOCK_HEIGHT - 4) / 0.3; // Complete collapse in 0.3s
+      blocks.forEach(block => {
+        if (!block.destroyed && block.collapseOffset !== 0) {
+          if (block.collapseOffset < 0) {
+            block.collapseOffset = Math.min(0, block.collapseOffset + collapseSpeed * deltaTime);
+          } else if (block.collapseOffset > 0) {
+            block.collapseOffset = Math.max(0, block.collapseOffset - collapseSpeed * deltaTime);
+          }
+        }
+      });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // UPDATE ENEMIES (with stacking - enemies attack from bottom up)
     // ═══════════════════════════════════════════════════════════════════
     const activeBlocks = blocks.filter(b => !b.destroyed);
     const cartRightEdge = GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH;
     const maxLatched = GAME_CONFIG.MAX_LATCHED_ENEMIES;
-    
+    const groundY = GAME_CONFIG.CANVAS_HEIGHT - GAME_CONFIG.GROUND_Y_OFFSET;
+    const stackSpacing = GAME_CONFIG.ENEMY_STACK_SPACING;
+
     if (latchedCountRef.current > telemetryRef.current.maxLatchedPeak) {
       telemetryRef.current.maxLatchedPeak = latchedCountRef.current;
     }
     if (latchedCountRef.current >= maxLatched) {
       telemetryRef.current.timeAtMaxLatched += deltaTime;
     }
-    
+
+    // Calculate stack positions for latched enemies (sorted by latch order)
+    const latchedEnemies = enemyPool.getActive()
+      .filter(e => e.state === 'LATCHED' && e.hp > 0)
+      .sort((a, b) => a.latchOrder - b.latchOrder);
+    latchedEnemies.forEach((enemy, stackIdx) => {
+      // Position enemies in a vertical stack: bottom-up from ground level
+      enemy.y = groundY - stackIdx * stackSpacing;
+    });
+
     let queuedCount = 0;
-    
+
     enemyPool.getActive().forEach(enemy => {
       // SERVED state
       if (enemy.state === 'SERVED' || enemy.isServed) {
@@ -1706,65 +2140,138 @@ export const CoffeeRushGame: React.FC = () => {
         }
         return;
       }
-      
+
       // Check if just killed (HP <= 0)
       if (enemy.hp <= 0) {
         if (enemy.state === 'LATCHED') {
           const slotsUsed = enemy.kind === 'BOSS' ? GAME_CONFIG.BOSS_LATCH_SLOTS : 1;
           latchedCountRef.current = Math.max(0, latchedCountRef.current - slotsUsed);
         }
-        
+
         enemy.state = 'SERVED';
         enemy.isServed = true;
         enemy.servedTimer = GAME_CONFIG.SERVED_EXIT_DURATION;
         customersServedRef.current++;
-        
+
         // Track kills
         if (enemy.kind === 'BOSS') telemetryRef.current.enemiesKilled.boss++;
         else if (enemy.kind === 'HEAVY') telemetryRef.current.enemiesKilled.heavy++;
         else telemetryRef.current.enemiesKilled.normal++;
-        
+
         // Drop coins (stage-based)
         const stage = getStage(stageIndexRef.current);
         const coinDrop = enemy.kind === 'BOSS' ? (stage.bossDropCoins ?? stage.enemyDropCoins) : stage.enemyDropCoins;
         coinsFromKillsRef.current += coinDrop;
         tipsRef.current += coinDrop;
         setTips(tipsRef.current);
-        
+
         // Spawn tip visual
         spawnTip(enemy.x, enemy.y - enemy.height, coinDrop);
-        
+
         // Celebration particles
         const pCount = enemy.kind === 'BOSS' ? 10 : 3;
         spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'heart', pCount);
         spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'sparkle', pCount + 2);
         if (enemy.kind === 'BOSS') spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'confetti', 20);
+
+        // EXPLODER: on death, deal blast damage to nearby blocks
+        if (enemy.kind === 'EXPLODER' && activeBlocks.length > 0) {
+          screenShakeRef.current = { x: 0, y: 0, duration: 0.25 };
+          spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'confetti', 15);
+          spawnParticles(enemy.x, enemy.y - enemy.height / 2, 'steam', 10);
+          // Damage closest block if within blast radius
+          const blastX = enemy.x;
+          const blastY = enemy.y - enemy.height / 2;
+          activeBlocks.forEach(b => {
+            const bx = GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH / 2;
+            const by = b.y + GAME_CONFIG.BLOCK_HEIGHT / 2;
+            const dist = Math.sqrt((blastX - bx) ** 2 + (blastY - by) ** 2);
+            if (dist < GAME_CONFIG.EXPLODER_BLAST_RADIUS) {
+              b.hp -= GAME_CONFIG.EXPLODER_BLAST_DAMAGE;
+              spawnParticles(bx, by, 'crumble', 4);
+              spawnFloatingDamage(bx, by - 10, GAME_CONFIG.EXPLODER_BLAST_DAMAGE, 'hsl(0, 70%, 55%)');
+            }
+          });
+        }
         return;
       }
-      
-      // LATCHED state
+
+      // LATCHED state - enemies damage blocks based on their stack height
       if (enemy.state === 'LATCHED') {
         enemy.latchedTimer -= deltaTime;
         if (enemy.latchedTimer <= 0 && activeBlocks.length > 0) {
-          const targetBlock = activeBlocks[activeBlocks.length - 1];
+          // Find which block this enemy overlaps based on its stack Y position
+          // Enemy center Y = enemy.y - enemy.height / 2
+          const enemyCenterY = enemy.y - enemy.height / 2;
+
+          // Find the block whose vertical range contains the enemy's center
+          // Blocks are sorted by id (0=bottom, higher=upper)
+          let targetBlock = activeBlocks.find(b => {
+            const blockTop = b.y;
+            const blockBottom = b.y + b.height;
+            return enemyCenterY >= blockTop && enemyCenterY <= blockBottom;
+          });
+
+          // Fallback: if enemy is below all blocks, hit bottom block
+          // If enemy is above all blocks, hit top block
+          if (!targetBlock) {
+            if (enemyCenterY > activeBlocks[0].y + activeBlocks[0].height) {
+              targetBlock = activeBlocks[0]; // below all blocks → hit bottom
+            } else {
+              targetBlock = activeBlocks[activeBlocks.length - 1]; // above all → hit top
+            }
+          }
+
           let tickDamage = GAME_CONFIG.LATCHED_TICK_DAMAGE;
           // Stage-aware latch damage multiplier (death wall pressure)
           const stageMult = LATCH_DAMAGE_MULT_BY_STAGE[stageIndexRef.current - 1] ?? 1.0;
           tickDamage *= stageMult;
-          if (enemy.kind === 'BOSS') tickDamage *= GAME_CONFIG.BOSS_TICK_DAMAGE_MULT;
+          if (enemy.kind === 'BOSS') {
+            tickDamage *= GAME_CONFIG.BOSS_TICK_DAMAGE_MULT;
+            // Boss phase damage multiplier
+            const bossPhase = bossStateRef.current.phase;
+            if (bossPhase === 4) tickDamage *= GAME_CONFIG.BOSS_PHASE4_DAMAGE_MULT;
+            else if (bossPhase === 3) tickDamage *= GAME_CONFIG.BOSS_PHASE3_DAMAGE_MULT;
+            else if (bossPhase === 2) tickDamage *= GAME_CONFIG.BOSS_PHASE2_DAMAGE_MULT;
+          }
           else if (enemy.kind === 'HEAVY') tickDamage *= GAME_CONFIG.HEAVY_TICK_DAMAGE_MULT;
+          else if (enemy.kind === 'SPEEDER') tickDamage *= GAME_CONFIG.SPEEDER_TICK_DAMAGE_MULT;
+          else if (enemy.kind === 'SHIELDED') tickDamage *= GAME_CONFIG.SHIELDED_TICK_DAMAGE_MULT;
+          else if (enemy.kind === 'EXPLODER') tickDamage *= GAME_CONFIG.EXPLODER_TICK_DAMAGE_MULT;
           targetBlock.hp -= tickDamage;
           enemy.latchedTimer = GAME_CONFIG.LATCHED_TICK_INTERVAL;
-          
+
           spawnParticles(cartRightEdge, targetBlock.y + GAME_CONFIG.BLOCK_HEIGHT / 2, 'steam', enemy.kind === 'BOSS' ? 5 : 2);
-          
+
           if (targetBlock.hp <= 0) {
             targetBlock.destroyed = true;
             telemetryRef.current.blocksLost++;
             if (telemetryRef.current.timeToFirstBlockLost < 0) {
               telemetryRef.current.timeToFirstBlockLost = timeRef.current;
             }
-            spawnParticles(GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH / 2, targetBlock.y, 'steam', 15);
+
+            // Crumble particles at destroyed block position
+            spawnParticles(GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH / 2, targetBlock.y, 'crumble', 12);
+            spawnParticles(GAME_CONFIG.CART_X + GAME_CONFIG.CART_WIDTH / 2, targetBlock.y, 'steam', 8);
+
+            // Screen shake on block destruction
+            screenShakeRef.current = { x: 0, y: 0, duration: 0.4 };
+
+            // Collapse: blocks above the destroyed one need to fall down
+            // Set collapseOffset for blocks that will visually shift
+            const boxHeight = GAME_CONFIG.BLOCK_HEIGHT - 4;
+            const remainingBlocks = blocks.filter(b => !b.destroyed && b.id > targetBlock.id);
+            remainingBlocks.forEach(b => {
+              // This block needs to drop by one slot visually
+              b.collapseOffset -= boxHeight;
+            });
+
+            // Update game logic Y positions for remaining blocks
+            const newActiveBlocks = blocks.filter(b => !b.destroyed).sort((a, b2) => a.id - b2.id);
+            newActiveBlocks.forEach((b, i) => {
+              b.y = groundY - 30 - (i + 1) * GAME_CONFIG.BLOCK_HEIGHT;
+            });
+
             if (blocks.filter(b => !b.destroyed).length === 0) {
               handleGameOver();
             }
@@ -1772,13 +2279,14 @@ export const CoffeeRushGame: React.FC = () => {
         }
         return;
       }
-      
+
       // QUEUED state
       if (enemy.state === 'QUEUED') {
         if (latchedCountRef.current < maxLatched) {
           enemy.state = 'LATCHED';
           enemy.latchedTimer = GAME_CONFIG.LATCHED_TICK_INTERVAL;
           enemy.x = cartRightEdge + enemy.width / 2;
+          enemy.latchOrder = latchOrderCounterRef.current++;
           latchedCountRef.current++;
         } else {
           queuedCount++;
@@ -1790,16 +2298,24 @@ export const CoffeeRushGame: React.FC = () => {
         }
         return;
       }
-      
+
+      // Update slow debuff timer
+      if (enemy.slowTimer > 0) {
+        enemy.slowTimer -= deltaTime;
+        if (enemy.slowTimer <= 0) { enemy.slowTimer = 0; enemy.slowFactor = 1; }
+      }
+
       // WALKING state
-      enemy.x -= enemy.speed * deltaTime;
-      
+      const effectiveSpeed = enemy.speed * (enemy.slowTimer > 0 ? enemy.slowFactor : 1);
+      enemy.x -= effectiveSpeed * deltaTime;
+
       if (enemy.x - enemy.width / 2 < cartRightEdge) {
         const slotsNeeded = enemy.kind === 'BOSS' ? GAME_CONFIG.BOSS_LATCH_SLOTS : 1;
         if (latchedCountRef.current + slotsNeeded <= maxLatched && activeBlocks.length > 0) {
           enemy.state = 'LATCHED';
           enemy.latchedTimer = GAME_CONFIG.LATCHED_TICK_INTERVAL;
           enemy.x = cartRightEdge + enemy.width / 2;
+          enemy.latchOrder = latchOrderCounterRef.current++;
           latchedCountRef.current += slotsNeeded;
         } else if (activeBlocks.length > 0) {
           enemy.state = 'QUEUED';
@@ -1824,6 +2340,13 @@ export const CoffeeRushGame: React.FC = () => {
       p.life -= deltaTime;
       if (p.life <= 0) particlePool.release(p);
     });
+
+    // Update floating damage numbers
+    floatingDamagePool.getActive().forEach(fd => {
+      fd.y -= 40 * deltaTime; // Float upward
+      fd.life -= deltaTime;
+      if (fd.life <= 0) floatingDamagePool.release(fd);
+    });
     
     // Screen shake
     if (screenShakeRef.current.duration > 0) {
@@ -1840,10 +2363,14 @@ export const CoffeeRushGame: React.FC = () => {
     drawGame(ctx, blocks, enemyPool.getActive(), projectilePool.getActive(),
       tipPool.getActive(), particlePool.getActive(), screenShakeRef.current,
       bossStateRef.current, bossIncomingRef.current, playPhaseRef.current,
-      deltaTime, gateBuildingRef.current, currentTime, hasStarRef.current, hasFoamRef.current, foamBoxIndexRef.current);
+      deltaTime, gateBuildingRef.current, currentTime, hasStarRef.current, hasFoamRef.current, foamBoxIndexRef.current,
+      hasEspressoRef.current, espressoBoxIndexRef.current, hasIceRef.current, iceBoxIndexRef.current);
+
+    // Draw floating damage numbers on top of everything
+    drawFloatingDamageNumbers(ctx, floatingDamagePool.getActive(), screenShakeRef.current);
   }, [
-    enemyPool, projectilePool, tipPool, particlePool,
-    spawnEnemy, fireProjectile, spawnParticles, spawnTip,
+    enemyPool, projectilePool, tipPool, particlePool, floatingDamagePool,
+    spawnEnemy, fireProjectile, spawnParticles, spawnTip, spawnFloatingDamage,
     handleGameOver, handleChapterClear, createGateBuilding,
   ]);
   
@@ -1903,6 +2430,12 @@ export const CoffeeRushGame: React.FC = () => {
             onBrewBurst={handleFoamBurst}
             canUseBrew={hasFoamRef.current && powerRef.current >= GAME_CONFIG.BREW_BURST_COST}
             hasBrew={hasFoamRef.current}
+            onEspressoBarrage={handleEspressoBarrage}
+            canUseEspresso={hasEspressoRef.current && powerRef.current >= GAME_CONFIG.ESPRESSO_BARRAGE_COST}
+            hasEspresso={hasEspressoRef.current}
+            onIceStorm={handleIceStorm}
+            canUseIce={hasIceRef.current && powerRef.current >= GAME_CONFIG.ICE_STORM_COST}
+            hasIce={hasIceRef.current}
             onPause={handlePause}
             gameMode={gameMode}
             bossState={bossState}

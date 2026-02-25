@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Shield, Zap, Package, Coffee, Lock, Swords, ShoppingBag, User, Wrench, Castle, ChevronDown, Check, Award, BatteryFull, RotateCcw, Play, Star } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { loadProgression, purchasePowerPip, purchaseDamagePip, purchaseBlockPip, purchaseCargoBox, getCargoBoxCost, getPipCost, setLastGameMode, resetProgression, getEnergyState, consumeEnergy, formatTimeRemaining, addDebugEnergy, purchaseStar, purchaseStarForBox, purchaseStarPip, purchaseBrewForBox } from './persistence';
+import { loadProgression, purchasePowerPip, purchaseDamagePip, purchaseBlockPip, purchaseCargoBox, getCargoBoxCost, getPipCost, getContinuousUpgradeCost, setLastGameMode, resetProgression, getEnergyState, consumeEnergy, formatTimeRemaining, addDebugEnergy, purchaseStar, purchaseStarForBox, purchaseStarPip, purchaseBrewForBox, purchaseEspressoForBox, purchaseIceForBox } from './persistence';
 import { GAME_CONFIG } from './config';
 import { CoinIcon } from './CoinIcon';
 import { toast } from 'sonner';
@@ -81,6 +81,48 @@ const PipTile: React.FC<PipTileProps> = ({ name, icon, currentPips, pipsPerEvo, 
   );
 };
 
+// TDS-style continuous upgrade tile (replaces pip dots with stat value)
+interface UpgradeTileProps {
+  name: string;
+  icon: React.ReactNode;
+  level: number;
+  statLabel: string;
+  cost: number;
+  coins: number;
+  onPurchase: () => void;
+}
+
+const UpgradeTile: React.FC<UpgradeTileProps> = ({ name, icon, level, statLabel, cost, coins, onPurchase }) => {
+  const canAfford = coins >= cost;
+
+  return (
+    <button
+      onClick={onPurchase}
+      disabled={!canAfford}
+      className={`flex-1 flex items-center gap-2 p-2 rounded-xl border-2 transition-all duration-200
+        ${canAfford ? 'bg-coffee-dark/80 border-warm-orange/50 hover:border-warm-orange active:scale-95'
+          : 'bg-coffee-dark/60 border-coffee-medium/30 opacity-70'}`}
+    >
+      <div className={`p-1.5 rounded-lg bg-warm-orange/20`}>
+        {icon}
+      </div>
+      <div className="flex-1 text-left">
+        <span className="text-xs text-coffee-cream/80">{name}</span>
+        <div className="flex items-center gap-1 mt-0.5">
+          <span className="text-xs font-bold text-coffee-cream">{statLabel}</span>
+          {level > 0 && (
+            <span className="text-[9px] text-gold font-bold ml-1">Lv.{level}</span>
+          )}
+        </div>
+      </div>
+      <div className="flex items-center gap-0.5">
+        <CoinIcon size={16} />
+        <span className={`text-sm font-bold ${canAfford ? 'text-gold' : 'text-coffee-cream/50'}`}>{cost}</span>
+      </div>
+    </button>
+  );
+};
+
 export const GarageOverlay: React.FC<GarageOverlayProps> = ({ onPlay, blockCount, onProgressionChange }) => {
   const [progression, setProgression] = useState(loadProgression());
   const [selectedMode, setSelectedMode] = useState<GameMode>(progression.lastGameMode || 'CHAPTER');
@@ -97,7 +139,7 @@ export const GarageOverlay: React.FC<GarageOverlayProps> = ({ onPlay, blockCount
   useEffect(() => { setEnergyState(getEnergyState()); }, [progression]);
 
   const handlePowerPip = () => {
-    const cost = getPipCost(progression.powerPips, GAME_CONFIG.POWER_PIP_BASE_COST, GAME_CONFIG.POWER_PIP_COST_SCALING);
+    const cost = getContinuousUpgradeCost(progression.powerPips, GAME_CONFIG.POWER_UPGRADE_BASE_COST, GAME_CONFIG.POWER_UPGRADE_STEP, GAME_CONFIG.POWER_UPGRADE_ACCEL);
     if (purchasePowerPip(cost)) {
       setProgression(loadProgression());
       onProgressionChange?.();
@@ -105,7 +147,7 @@ export const GarageOverlay: React.FC<GarageOverlayProps> = ({ onPlay, blockCount
   };
 
   const handleDamagePip = () => {
-    const cost = getPipCost(progression.damagePips, GAME_CONFIG.DAMAGE_PIP_BASE_COST, GAME_CONFIG.DAMAGE_PIP_COST_SCALING);
+    const cost = getContinuousUpgradeCost(progression.damagePips, GAME_CONFIG.DAMAGE_UPGRADE_BASE_COST, GAME_CONFIG.DAMAGE_UPGRADE_STEP, GAME_CONFIG.DAMAGE_UPGRADE_ACCEL);
     if (purchaseDamagePip(cost)) {
       setProgression(loadProgression());
       onProgressionChange?.();
@@ -322,18 +364,81 @@ export const GarageOverlay: React.FC<GarageOverlayProps> = ({ onPlay, blockCount
           // Per-box weapon lock
           const boxWeapons = progression.boxWeapons || [null, null, null];
           const boxWeapon = boxWeapons[boxIdx];
+          const boxIsEmpty = boxWeapon === null;
+
+          // Weapon availability by stage
+          const showStar = progression.bestStageReached >= 2;
+          const showBrew = progression.bestStageReached >= 3;
+          const showEspresso = progression.bestStageReached >= 4;
+          const showIce = progression.bestStageReached >= 5;
 
           // Brew per-box
           const brewPerBox = progression.brewPerBox || [false, false, false];
           const isBrewed = brewPerBox[boxIdx] || false;
           const canAffordBrew = progression.totalCoins >= GAME_CONFIG.BREW_PER_BOX_COST;
-          const showBrew = progression.bestStageReached >= 3;
-          
+
+          // Espresso per-box
+          const espressoPerBox = progression.espressoPerBox || [false, false, false];
+          const isEspressoed = espressoPerBox[boxIdx] || false;
+          const canAffordEspresso = progression.totalCoins >= GAME_CONFIG.ESPRESSO_PER_BOX_COST;
+
+          // Ice per-box
+          const icePerBox = progression.icePerBox || [false, false, false];
+          const isIced = icePerBox[boxIdx] || false;
+          const canAffordIce = progression.totalCoins >= GAME_CONFIG.ICE_PER_BOX_COST;
+
           return (
             <div key={`weapons-${boxIdx}`} className="absolute pointer-events-auto flex gap-1"
               style={{ top: boxY, left: cartRightEdge + 6 }}>
-              {/* Star button (hidden if box has brew) */}
-              {boxWeapon !== 'brew' && (!isStarred ? (
+
+              {/* ═══ EQUIPPED WEAPON INDICATOR ═══ */}
+              {boxWeapon === 'star' && (
+                hasAnyStar && boxIdx === (starPerBox.findIndex(v => v)) ? (
+                  <button
+                    onClick={handleStarPip}
+                    disabled={starIsMaxed || progression.totalCoins < starPipCost}
+                    className={`flex flex-col items-center justify-center p-1 rounded-md border min-w-[32px] h-[46px] transition-all duration-200
+                      ${starIsMaxed ? 'bg-sky-900/60 border-sky-500/50 opacity-60'
+                        : progression.totalCoins >= starPipCost ? 'bg-coffee-dark/80 border-sky-400/50 hover:border-sky-400 active:scale-95'
+                        : 'bg-coffee-dark/60 border-coffee-medium/30 opacity-70'}`}>
+                    <Star className="w-3.5 h-3.5 text-sky-400 fill-sky-400" />
+                    <div className="flex gap-px mt-0.5">
+                      {Array.from({ length: GAME_CONFIG.STAR_PIP_PER_EVO }, (_, i) => (
+                        <div key={i} className={`w-1 h-1 rounded-full ${i < starPipsInTier ? 'bg-sky-400' : 'bg-coffee-medium/40'}`} />
+                      ))}
+                      {starEvoCount > 0 && <span className="text-[6px] text-sky-300 font-bold ml-0.5">E{starEvoCount}</span>}
+                    </div>
+                    {starIsMaxed ? <span className="text-[6px] text-green-400 mt-0.5">MAX</span>
+                      : <span className="text-[7px] mt-0.5 text-gold">🪙{starPipCost}</span>}
+                  </button>
+                ) : (
+                  <div className="flex flex-col items-center justify-center p-1 rounded-md border min-w-[32px] h-[38px] bg-sky-900/60 border-sky-500/50">
+                    <Star className="w-3.5 h-3.5 text-sky-400 fill-sky-400" />
+                    <Check className="w-2.5 h-2.5 text-sky-400 mt-0.5" />
+                  </div>
+                )
+              )}
+              {boxWeapon === 'brew' && (
+                <div className="flex flex-col items-center justify-center p-1 rounded-md border min-w-[32px] h-[38px] bg-amber-900/60 border-amber-500/50">
+                  <span className="text-sm">🫧</span>
+                  <Check className="w-2.5 h-2.5 text-amber-400 mt-0.5" />
+                </div>
+              )}
+              {boxWeapon === 'espresso' && (
+                <div className="flex flex-col items-center justify-center p-1 rounded-md border min-w-[32px] h-[38px] bg-amber-900/60 border-amber-700/50">
+                  <span className="text-sm">☕</span>
+                  <Check className="w-2.5 h-2.5 text-amber-600 mt-0.5" />
+                </div>
+              )}
+              {boxWeapon === 'ice' && (
+                <div className="flex flex-col items-center justify-center p-1 rounded-md border min-w-[32px] h-[38px] bg-cyan-900/60 border-cyan-500/50">
+                  <span className="text-sm">🧊</span>
+                  <Check className="w-2.5 h-2.5 text-cyan-400 mt-0.5" />
+                </div>
+              )}
+
+              {/* ═══ BUY WEAPON BUTTONS (only if box has no weapon) ═══ */}
+              {boxIsEmpty && showStar && (
                 <button
                   onClick={() => {
                     if (purchaseStarForBox(boxIdx, GAME_CONFIG.STAR_PER_BOX_COST)) {
@@ -349,55 +454,60 @@ export const GarageOverlay: React.FC<GarageOverlayProps> = ({ onPlay, blockCount
                   <Star className="w-3.5 h-3.5 text-sky-400" />
                   <span className="text-[7px] mt-0.5 text-gold">🪙{GAME_CONFIG.STAR_PER_BOX_COST}</span>
                 </button>
-              ) : hasAnyStar && boxIdx === 0 ? (
-                <button
-                  onClick={handleStarPip}
-                  disabled={starIsMaxed || progression.totalCoins < starPipCost}
-                  className={`flex flex-col items-center justify-center p-1 rounded-md border min-w-[32px] h-[46px] transition-all duration-200
-                    ${starIsMaxed ? 'bg-sky-900/60 border-sky-500/50 opacity-60'
-                      : progression.totalCoins >= starPipCost ? 'bg-coffee-dark/80 border-sky-400/50 hover:border-sky-400 active:scale-95'
-                      : 'bg-coffee-dark/60 border-coffee-medium/30 opacity-70'}`}>
-                  <Star className="w-3.5 h-3.5 text-sky-400 fill-sky-400" />
-                  <div className="flex gap-px mt-0.5">
-                    {Array.from({ length: GAME_CONFIG.STAR_PIP_PER_EVO }, (_, i) => (
-                      <div key={i} className={`w-1 h-1 rounded-full ${i < starPipsInTier ? 'bg-sky-400' : 'bg-coffee-medium/40'}`} />
-                    ))}
-                    {starEvoCount > 0 && <span className="text-[6px] text-sky-300 font-bold ml-0.5">E{starEvoCount}</span>}
-                  </div>
-                  {starIsMaxed ? <span className="text-[6px] text-green-400 mt-0.5">MAX</span>
-                    : <span className="text-[7px] mt-0.5 text-gold">🪙{starPipCost}</span>}
-                </button>
-              ) : (
-                <div className="flex flex-col items-center justify-center p-1 rounded-md border min-w-[32px] h-[38px] bg-sky-900/60 border-sky-500/50">
-                  <Star className="w-3.5 h-3.5 text-sky-400 fill-sky-400" />
-                  <Check className="w-2.5 h-2.5 text-sky-400 mt-0.5" />
-                </div>
-              ))}
+              )}
 
-              {/* Brew button (hidden if box has star) */}
-              {showBrew && boxWeapon !== 'star' && (
-                !isBrewed ? (
-                  <button
-                    onClick={() => {
-                      if (purchaseBrewForBox(boxIdx, GAME_CONFIG.BREW_PER_BOX_COST)) {
-                        setProgression(loadProgression());
-                        onProgressionChange?.();
-                        toast.success('Brew Equipped!', { icon: '🫧' });
-                      }
-                    }}
-                    disabled={!canAffordBrew}
-                    className={`flex flex-col items-center justify-center p-1 rounded-md border min-w-[32px] h-[38px] transition-all duration-200
-                      ${canAffordBrew ? 'bg-coffee-dark/80 border-amber-500/50 hover:border-amber-500 active:scale-95'
-                      : 'bg-coffee-dark/60 border-coffee-medium/30 opacity-70'}`}>
-                    <span className="text-sm">🫧</span>
-                    <span className="text-[7px] mt-0.5 text-gold">🪙{GAME_CONFIG.BREW_PER_BOX_COST}</span>
-                  </button>
-                ) : (
-                  <div className="flex flex-col items-center justify-center p-1 rounded-md border min-w-[32px] h-[38px] bg-amber-900/60 border-amber-500/50">
-                    <span className="text-sm">🫧</span>
-                    <Check className="w-2.5 h-2.5 text-amber-400 mt-0.5" />
-                  </div>
-                )
+              {boxIsEmpty && showBrew && (
+                <button
+                  onClick={() => {
+                    if (purchaseBrewForBox(boxIdx, GAME_CONFIG.BREW_PER_BOX_COST)) {
+                      setProgression(loadProgression());
+                      onProgressionChange?.();
+                      toast.success('Brew Equipped!', { icon: '🫧' });
+                    }
+                  }}
+                  disabled={!canAffordBrew}
+                  className={`flex flex-col items-center justify-center p-1 rounded-md border min-w-[32px] h-[38px] transition-all duration-200
+                    ${canAffordBrew ? 'bg-coffee-dark/80 border-amber-500/50 hover:border-amber-500 active:scale-95'
+                    : 'bg-coffee-dark/60 border-coffee-medium/30 opacity-70'}`}>
+                  <span className="text-sm">🫧</span>
+                  <span className="text-[7px] mt-0.5 text-gold">🪙{GAME_CONFIG.BREW_PER_BOX_COST}</span>
+                </button>
+              )}
+
+              {boxIsEmpty && showEspresso && (
+                <button
+                  onClick={() => {
+                    if (purchaseEspressoForBox(boxIdx, GAME_CONFIG.ESPRESSO_PER_BOX_COST)) {
+                      setProgression(loadProgression());
+                      onProgressionChange?.();
+                      toast.success('Espresso Cannon Equipped!', { icon: '☕' });
+                    }
+                  }}
+                  disabled={!canAffordEspresso}
+                  className={`flex flex-col items-center justify-center p-1 rounded-md border min-w-[32px] h-[38px] transition-all duration-200
+                    ${canAffordEspresso ? 'bg-coffee-dark/80 border-amber-700/50 hover:border-amber-700 active:scale-95'
+                    : 'bg-coffee-dark/60 border-coffee-medium/30 opacity-70'}`}>
+                  <span className="text-sm">☕</span>
+                  <span className="text-[7px] mt-0.5 text-gold">🪙{GAME_CONFIG.ESPRESSO_PER_BOX_COST}</span>
+                </button>
+              )}
+
+              {boxIsEmpty && showIce && (
+                <button
+                  onClick={() => {
+                    if (purchaseIceForBox(boxIdx, GAME_CONFIG.ICE_PER_BOX_COST)) {
+                      setProgression(loadProgression());
+                      onProgressionChange?.();
+                      toast.success('Ice Blender Equipped!', { icon: '🧊' });
+                    }
+                  }}
+                  disabled={!canAffordIce}
+                  className={`flex flex-col items-center justify-center p-1 rounded-md border min-w-[32px] h-[38px] transition-all duration-200
+                    ${canAffordIce ? 'bg-coffee-dark/80 border-cyan-500/50 hover:border-cyan-500 active:scale-95'
+                    : 'bg-coffee-dark/60 border-coffee-medium/30 opacity-70'}`}>
+                  <span className="text-sm">🧊</span>
+                  <span className="text-[7px] mt-0.5 text-gold">🪙{GAME_CONFIG.ICE_PER_BOX_COST}</span>
+                </button>
               )}
             </div>
           );
@@ -411,15 +521,15 @@ export const GarageOverlay: React.FC<GarageOverlayProps> = ({ onPlay, blockCount
       <div className="p-3 space-y-2">
         {/* Upgrade Row */}
         <div className="flex gap-2">
-          <PipTile name="Power" icon={<Zap className="w-4 h-4 text-energy" />}
-            currentPips={progression.powerPips} pipsPerEvo={GAME_CONFIG.POWER_PIP_PER_EVO}
-            evoCount={progression.powerEvoChoices?.length || 0}
-            cost={getPipCost(progression.powerPips, GAME_CONFIG.POWER_PIP_BASE_COST, GAME_CONFIG.POWER_PIP_COST_SCALING)}
+          <UpgradeTile name="Power" icon={<Zap className="w-4 h-4 text-energy" />}
+            level={progression.powerPips}
+            statLabel={`${(GAME_CONFIG.POWER_START_REGEN * (1 + progression.powerPips * GAME_CONFIG.POWER_REGEN_BONUS_PER_PIP)).toFixed(2)}/s`}
+            cost={getContinuousUpgradeCost(progression.powerPips, GAME_CONFIG.POWER_UPGRADE_BASE_COST, GAME_CONFIG.POWER_UPGRADE_STEP, GAME_CONFIG.POWER_UPGRADE_ACCEL)}
             coins={progression.totalCoins} onPurchase={handlePowerPip} />
-          <PipTile name="Damage" icon={<Coffee className="w-4 h-4 text-warm-orange" />}
-            currentPips={progression.damagePips} pipsPerEvo={GAME_CONFIG.DAMAGE_PIP_PER_EVO}
-            evoCount={progression.damageEvoChoices?.length || 0}
-            cost={getPipCost(progression.damagePips, GAME_CONFIG.DAMAGE_PIP_BASE_COST, GAME_CONFIG.DAMAGE_PIP_COST_SCALING)}
+          <UpgradeTile name="Damage" icon={<Coffee className="w-4 h-4 text-warm-orange" />}
+            level={progression.damagePips}
+            statLabel={`${Math.floor(GAME_CONFIG.PROJECTILE_DAMAGE * (1 + progression.damagePips * GAME_CONFIG.DAMAGE_BONUS_PER_PIP))}`}
+            cost={getContinuousUpgradeCost(progression.damagePips, GAME_CONFIG.DAMAGE_UPGRADE_BASE_COST, GAME_CONFIG.DAMAGE_UPGRADE_STEP, GAME_CONFIG.DAMAGE_UPGRADE_ACCEL)}
             coins={progression.totalCoins} onPurchase={handleDamagePip} />
         </div>
         
